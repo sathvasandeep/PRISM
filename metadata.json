@@ -1,0 +1,5 @@
+{
+  "name": "PRISM Framework: Role Profiler",
+  "description": "An application to define and profile professional roles using the PRISM framework, assessing Skills, Knowledge, Identity, Values, and Ethics (SKIVE).",
+  "requestFramePermissions": []
+}
