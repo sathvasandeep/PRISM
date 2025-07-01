@@ -1,32 +1,50 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PRISM Framework: Role Profiler</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>PRISM Framework</title>
+
+  <!-- Tailwind (utility-CSS) -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-  <link rel="stylesheet" href="./index.css">
-  
-  <!-- **CRITICAL FIX**: Add Babel to translate JSX/TSX for the browser -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  
-  <script type="importmap">
+
+  <!-- Inter font -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Import-map polyfill (must load before the map) -->
+  <script async src="https://ga.jspm.io/npm:es-module-shims@1.8.2/dist/es-module-shims.js"></script>
+
+  <!-- Import-map – valid JSON (no comments allowed) -->
+  <script type="importmap-shim">
   {
     "imports": {
-      "react": "https://esm.sh/react@19.1.0",
-      "react-dom/client": "https://esm.sh/react-dom@19.1.0/client",
-      "lucide-react": "https://esm.sh/lucide-react@0.525.0",
-      "recharts": "https://esm.sh/recharts@3.0.2"
+      "react":                 "https://esm.sh/react@18.2.0",
+      "react/jsx-runtime":     "https://esm.sh/react@18.2.0/jsx-runtime",
+      "react/jsx-dev-runtime": "https://esm.sh/react@18.2.0/jsx-dev-runtime",
+
+      "react-dom":             "https://esm.sh/react-dom@18.2.0",
+      "react-dom/client":      "https://esm.sh/react-dom@18.2.0/client",
+
+      "lucide-react":          "https://esm.sh/lucide-react@0.372.0?external=react",
+      "recharts":              "https://esm.sh/recharts@2.12.7?external=react,react-dom"
     }
   }
   </script>
-</head>
-<body class="bg-gray-50">
-  <div id="root"></div>
-  
-  <!-- **CRITICAL FIX**: Change type to "text/babel" and use a relative path -->
-  <script type="text/babel" data-type="module" src="./index.tsx"></script>
 
+  <!-- Babel (compiles the TSX below in-browser) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+
+<body class="bg-gray-50 font-[Inter]">
+  <!-- React mounts here -->
+  <div id="root"></div>
+
+  <!-- Your entry file; Babel recompiles it, es-module-shims resolves imports -->
+  <script
+    type="text/babel"
+    data-type="module-shim"
+    data-presets="react,typescript"
+    src="./index.tsx">
+  </script>
 </body>
 </html>
