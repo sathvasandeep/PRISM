@@ -14,15 +14,19 @@ Environment (.env)
     API_KEY=<your‑Gemini‑key>    # optional – comment out to disable AI routes
 """
 
+import pymysql
+from pymysql import MySQLError
+import pymysql.cursors
+
 import os, logging, traceback, asyncio
 from typing import Dict, List, Optional, Generator
 
 from dotenv import load_dotenv
-import mysql.connector
+#import mysql.connector
 import google.generativeai as genai
 
 from fastapi import FastAPI, HTTPException, Depends, Query
-from fastapi.middleware.cors import CORSMiddleware
+#from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --------------------------------------------------------------------
@@ -38,6 +42,9 @@ logging.basicConfig(
 # 2. Environment
 # --------------------------------------------------------------------
 load_dotenv()
+
+
+
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_USER = os.getenv("DB_USER")
@@ -59,31 +66,41 @@ else:
 # 3. DB helper
 # --------------------------------------------------------------------
 
-def get_db_connection() -> Generator[mysql.connector.MySQLConnection, None, None]:
-    """Yield a MySQL connection, always closing it afterwards."""
+from pymysql import MySQLError
+
+def get_db_connection() -> Generator[pymysql.connections.Connection, None, None]:
+    """Yield a MySQL connection using pymysql, always closing it afterwards."""
+    conn = None
     try:
-        conn = mysql.connector.connect(
+        conn = pymysql.connect(
             host=DB_HOST,
             user=DB_USER,
             password=DB_PASSWORD,
             database=DB_NAME,
-            autocommit=False,
+            port=3306,
+            autocommit=True,
+            cursorclass=pymysql.cursors.DictCursor
         )
         yield conn
-    except mysql.connector.Error as err:
-        logging.exception("MySQL‑connect failed")
+    except MySQLError as err:
+        logging.exception("pymysql‑connect failed")
         raise HTTPException(500, f"DB connection failed: {err}")
     finally:
-        if "conn" in locals() and conn.is_connected():
+        if conn:
             conn.close()
 
 # --------------------------------------------------------------------
 # 4. FastAPI + CORS
 # --------------------------------------------------------------------
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(title="PRISM Framework API")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],           # 🔒 tighten in production
+    allow_origins=["http://localhost:8080"],  # 👈 your frontend dev origin
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -98,13 +115,9 @@ async def startup_db_check():
     loop = asyncio.get_running_loop()
 
     def _ping():
-        gen = get_db_connection()
-        conn = next(gen)  # open
-        conn.close()
-        try:
-            next(gen)     # finish generator
-        except StopIteration:
-            pass
+        for conn in get_db_connection():
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
 
     try:
         await loop.run_in_executor(None, _ping)
@@ -112,7 +125,6 @@ async def startup_db_check():
     except Exception as exc:
         logging.critical("Initial DB connection failed: %s", exc)
         raise SystemExit(2)
-
 # --------------------------------------------------------------------
 # 6. DTOs
 # --------------------------------------------------------------------
@@ -233,7 +245,8 @@ async def generate(req: GenerationRequest):
 # --------------------------------------------------------------------
 @app.get("/api/profiles", response_model=List[Dict])
 async def list_profiles(db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("""SELECT id,profession,department,specific_role,description,
                           archetype,updated_at
                    FROM profiles ORDER BY updated_at DESC""")
@@ -244,7 +257,7 @@ async def list_profiles(db=Depends(get_db_connection)):
 
 @app.get("/api/profiles/{pid}", response_model=Profile)
 async def load_profile(pid:int, db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("SELECT * FROM profiles WHERE id=%s", (pid,))
     p = cur.fetchone()
     if not p:
@@ -278,7 +291,7 @@ async def load_profile(pid:int, db=Depends(get_db_connection)):
 
 @app.post("/api/profiles", response_model=Dict)
 async def save_profile(profile: Profile, db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     try:
         # ---------- UPDATE ----------
         if profile.id:
@@ -372,7 +385,7 @@ async def save_profile(profile: Profile, db=Depends(get_db_connection)):
         db.commit()
         return {"id": profile.id, "message": f"Profile {msg}."}
 
-    except mysql.connector.Error as err:
+    except MySQLError as err:
         db.rollback()
         raise HTTPException(500, f"DB error: {err}")
     finally:
@@ -383,7 +396,7 @@ async def save_profile(profile: Profile, db=Depends(get_db_connection)):
 # --------------------------------------------------------------------
 @app.get("/api/professions", response_model=List[ProfessionOut])
 async def list_professions(db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("SELECT id,name FROM professions ORDER BY name")
     rows = cur.fetchall()
     cur.close()
@@ -391,7 +404,7 @@ async def list_professions(db=Depends(get_db_connection)):
 
 @app.get("/api/departments", response_model=List[DepartmentOut])
 async def list_departments(profession_id:int=Query(...,ge=1), db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("SELECT id,profession_id,name FROM departments WHERE profession_id=%s ORDER BY name", (profession_id,))
     rows = cur.fetchall()
     cur.close()
@@ -399,7 +412,7 @@ async def list_departments(profession_id:int=Query(...,ge=1), db=Depends(get_db_
 
 @app.get("/api/roles", response_model=List[RoleOut])
 async def list_roles(department_id:int=Query(...,ge=1), db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("SELECT id,department_id,name FROM roles WHERE department_id=%s ORDER BY name", (department_id,))
     rows = cur.fetchall()
     cur.close()
@@ -408,7 +421,7 @@ async def list_roles(department_id:int=Query(...,ge=1), db=Depends(get_db_connec
 # master KRA list -----------------------------------------------------
 @app.get("/api/kras_master", response_model=List[Dict])
 async def list_kras_master(db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("""
         SELECT id,
                label AS kra_label,
@@ -426,7 +439,7 @@ async def list_kras_master(db=Depends(get_db_connection)):
 # --------------------------------------------------------------------
 @app.get("/api/profiles/{pid}/tasks", response_model=List[TaskOut])
 async def load_tasks(pid:int, db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("SELECT id,task_text,idx FROM profile_tasks WHERE profile_id=%s ORDER BY idx", (pid,))
     rows = cur.fetchall()
     cur.close()
@@ -447,7 +460,7 @@ async def save_tasks(pid:int, tasks:List[TaskIn], db=Depends(get_db_connection))
 
 @app.get("/api/profiles/{pid}/kras", response_model=List[KraOut])
 async def load_kras(pid:int, db=Depends(get_db_connection)):
-    cur = db.cursor(dictionary=True)
+    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
     cur.execute("SELECT id,kra_id,custom_label FROM profile_kras WHERE profile_id=%s", (pid,))
     rows = cur.fetchall()
     cur.close()

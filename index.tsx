@@ -3,7 +3,7 @@
    ==================================================================== */
 
 const API_ROOT =
-  (window as any).__PRISM_API__ ?? "http://127.0.0.1:8000";
+  (window as any).__PRISM_API__ ?? "http://localhost:8000";
 
 /* ------------- React / library imports ---------------------------- */
 import React, {
