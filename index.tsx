@@ -3,7 +3,7 @@
    ==================================================================== */
 
 const API_ROOT =
-  (window as any).__PRISM_API__ ?? "http://localhost:8000";
+  (window as any).__PRISM_API__ ?? "http://127.0.0.1:8000";
 
 /* ------------- React / library imports ---------------------------- */
 import React, {
@@ -150,6 +150,17 @@ interface SavedSummary {
   updated_at:string; 
   archetype:string|null;
 }
+
+// NEW: Type definition for a generated task from Stage 3
+interface TaskPayload {
+  id: string; // Unique ID for this task instance
+  competencyId: string;
+  gcrId: string;
+  uiComponentId: string;
+  context: any; // The AI-generated content
+  outputSchema: any;
+}
+
 
 /* ------------- Helpers ---------------------------------------- */
 // resilient JSON.parse for local string fields
@@ -491,7 +502,7 @@ function RoleProfiler(
 function ALEDesigner(
   { profile, onProfileChange, onBack, onSave, onFinish, saveStatus }:{
     profile:Profile;
-    onProfileChange:(u:(p:Profile)=>Profile)=>void;
+    onProfileChange:(u:(p:Profile)=>void)=>void;
     onBack:()=>void;
     onSave:()=>Promise<void>;
     onFinish:()=>void;
@@ -559,12 +570,114 @@ function ALEDesigner(
         <div className="flex items-center gap-4">
             {saveStatus.message && <span className={`text-sm font-medium ${saveStatus.isError ? "text-red-600" : "text-green-600"}`}>{saveStatus.message}</span>}
             <button onClick={onSave} disabled={saveStatus.loading} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"><Save size={16}/> {saveStatus.loading ? "Saving…" : "Save Design"}</button>
-            <button onClick={onFinish} className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700"><CheckCircle size={18}/> Save & Finish</button>
+            <button onClick={onFinish} className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700"><CheckCircle size={18}/> Save & Proceed to Stage 3</button>
         </div>
     </div>
     </>
   );
 }
+
+// NEW: All components for Stage 3 are placed here for clarity.
+
+/* =================================================================
+   Stage 3 component ▸  TASK FACTORY
+   ================================================================= */
+
+// NEW: A dispatcher component to render the correct UI for a task
+function TaskRenderer({ task }: { task: TaskPayload }) {
+  const { uiComponentId, context } = task;
+
+  // This is the UI Component Mapper in action
+  switch (uiComponentId) {
+    case 'ui-rank-and-write':
+      // This is a placeholder for a real interactive component
+      return (
+        <div className="p-4 border bg-blue-50 border-blue-200 rounded-lg animate-fade-in">
+          <h5 className="font-bold text-blue-800">Task: Rank & Justify</h5>
+          <p className="text-sm text-gray-700 mt-2 mb-3">
+            <strong>Scenario:</strong> Based on the criteria <i className="font-medium">"{context.criteria_md}"</i>, rank the following options and provide your rationale.
+          </p>
+          <div className="p-3 bg-white border rounded-md">
+            <h6 className="font-semibold mb-2">Options:</h6>
+            <ul className="list-decimal pl-5 space-y-1">
+              {(context.options_list || []).map((opt: string, i: number) => <li key={i} className="text-gray-800">{opt}</li>)}
+            </ul>
+          </div>
+          <textarea className="w-full mt-3 p-2 border rounded" rows={4} placeholder="Your ranking (e.g., 1. Option C, 2. Option A...) and detailed rationale..."></textarea>
+        </div>
+      );
+    case 'ui-markdown-editor':
+      return <div className="p-4 border bg-green-50 border-green-200 rounded-lg animate-fade-in">Render a Markdown editor here for Insight Generation...</div>;
+    case 'ui-kanban-board':
+       return <div className="p-4 border bg-purple-50 border-purple-200 rounded-lg animate-fade-in">Render a Kanban board here for Strategic Formulation...</div>;
+    default:
+      return <div className="p-4 border bg-red-100 text-red-700 rounded-lg">Error: Unknown UI Component ID '{uiComponentId}'</div>;
+  }
+}
+
+// NEW: The main component for Stage 3
+function TaskFactory({ profile, onBack }: { profile: Profile; onBack: () => void; }) {
+  const [tasks, setTasks] = useState<Record<string, TaskPayload | null>>({}); // competencyId -> TaskPayload
+  const [loadingState, setLoadingState] = useState<Record<string, boolean>>({});
+
+  const learningObjectives = Object.entries(profile.aleDesign.learningObjectives);
+
+  const generateTask = async (competencyId: string, objectiveText: string) => {
+    setLoadingState(p => ({...p, [competencyId]: true}));
+    try {
+      const res = await fetch(`${API_ROOT}/api/profiles/${profile.id}/generate-task`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ competency_id: competencyId, objective_text: objectiveText }),
+      });
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      const taskPayload: TaskPayload = await res.json();
+      setTasks(p => ({ ...p, [competencyId]: taskPayload }));
+    } catch (e) {
+      alert(`Failed to generate task: ${(e as Error).message}`);
+    } finally {
+        setLoadingState(p => ({...p, [competencyId]: false}));
+    }
+  };
+
+  return (
+    <>
+      <div className="px-6 py-5 border-b border-gray-200">
+        <h2 className="text-lg font-semibold text-gray-800">Stage 3: Task Generator</h2>
+        <p className="text-sm text-gray-600">Generate and configure interactive tasks based on your design.</p>
+      </div>
+      <div className="p-6 space-y-6 bg-gray-50">
+        <h3 className="text-xl font-semibold text-gray-800 border-b pb-2 mb-4">Generated Tasks</h3>
+        {learningObjectives.length === 0 && <p className="text-center text-gray-500 py-4">No learning objectives defined in Stage 2.</p>}
+        {learningObjectives.map(([competencyId, objectiveText]) => (
+          <div key={competencyId} className="p-4 bg-white border rounded-lg shadow-sm">
+            <h4 className="font-semibold text-gray-800 capitalize">Objective for: <span className="text-blue-700">{competencyId.split('-').pop()}</span></h4>
+            <p className="text-sm text-gray-600 italic my-2">"{objectiveText}"</p>
+            <div className="mt-4">
+              {tasks[competencyId] ? (
+                <TaskRenderer task={tasks[competencyId]!} />
+              ) : (
+                <button
+                  onClick={() => generateTask(competencyId, objectiveText)}
+                  disabled={loadingState[competencyId]}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 disabled:opacity-60 transition-all"
+                >
+                  <Sparkles size={16}/>
+                  {loadingState[competencyId] ? 'Generating...' : 'Generate Interactive Task'}
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+       <div className="px-6 py-4 border-t border-gray-200 flex justify-between bg-white items-center">
+        <button onClick={onBack} className="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"><ArrowLeft size={18}/> Back to Stage 2</button>
+        {/* You can add a final "Finish & Exit" button here later */}
+      </div>
+    </>
+  );
+}
+
 
 /* =================================================================
    PrismApp ▸ stage switcher
@@ -572,7 +685,8 @@ function ALEDesigner(
 function PrismApp({ profile:initial, onExit }:{
   profile:Profile; onExit:()=>void;
 }){
-  const [stage,setStage]       = useState<"profiling"|"designing">("profiling");
+  // NEW: Added "tasking" to the stage state
+  const [stage,setStage] = useState<"profiling"|"designing"|"tasking">("profiling");
   const [profile,setProfile]   = useState<Profile>(initial);
   const [saveInfo,setSaveInfo] = useState({ loading:false, message:"", isError:false });
   const updateProfile = (fn:(p:Profile)=>Profile)=>{
@@ -593,9 +707,10 @@ function PrismApp({ profile:initial, onExit }:{
     }
   };
 
-  const handleFinish = async () => {
+  const handleProceedToStage3 = async () => {
+    // NEW: The finish button from Stage 2 now goes to Stage 3
     await saveProfile();
-    onExit();
+    setStage("tasking");
   };
 
   const stageComponents = {
@@ -609,9 +724,13 @@ function PrismApp({ profile:initial, onExit }:{
                   profile={profile}
                   onProfileChange={updateProfile}
                   onBack ={()=>setStage("profiling")}
-                  onFinish={handleFinish}
+                  onFinish={handleProceedToStage3} // NEW: Hooked up to the new handler
                   onSave ={saveProfile}
                   saveStatus={saveInfo}/>,
+    // NEW: Added Stage 3 component to the dispatcher
+    tasking: <TaskFactory 
+                profile={profile} 
+                onBack={()=>setStage("designing")} />,
   };
 
   return (
@@ -624,9 +743,11 @@ function PrismApp({ profile:initial, onExit }:{
               <h1 className="text-2xl font-bold text-gray-900">PRISM Framework</h1>
               <p className="text-gray-600">Professional Role Identity & SKIVE-Mapped Environments</p>
             </div>
+            {/* NEW: Added Stage 3 to the visual indicator */}
             <div className="flex gap-2">
               <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='profiling' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 1</span>
               <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='designing' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 2</span>
+              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='tasking' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 3</span>
             </div>
           </div>
         </header>
@@ -718,4 +839,3 @@ function AppContainer(){
 ReactDOM
   .createRoot(document.getElementById("root")!)
   .render(<React.StrictMode><AppContainer/></React.StrictMode>);
-

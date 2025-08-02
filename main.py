@@ -14,19 +14,15 @@ Environment (.env)
     API_KEY=<your‑Gemini‑key>    # optional – comment out to disable AI routes
 """
 
-import pymysql
-from pymysql import MySQLError
-import pymysql.cursors
-
-import os, logging, traceback, asyncio
+import os, logging, traceback, asyncio, json
 from typing import Dict, List, Optional, Generator
 
 from dotenv import load_dotenv
-#import mysql.connector
+import mysql.connector
 import google.generativeai as genai
 
 from fastapi import FastAPI, HTTPException, Depends, Query
-#from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --------------------------------------------------------------------
@@ -42,9 +38,6 @@ logging.basicConfig(
 # 2. Environment
 # --------------------------------------------------------------------
 load_dotenv()
-
-
-
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_USER = os.getenv("DB_USER")
@@ -66,41 +59,31 @@ else:
 # 3. DB helper
 # --------------------------------------------------------------------
 
-from pymysql import MySQLError
-
-def get_db_connection() -> Generator[pymysql.connections.Connection, None, None]:
-    """Yield a MySQL connection using pymysql, always closing it afterwards."""
-    conn = None
+def get_db_connection() -> Generator[mysql.connector.MySQLConnection, None, None]:
+    """Yield a MySQL connection, always closing it afterwards."""
     try:
-        conn = pymysql.connect(
+        conn = mysql.connector.connect(
             host=DB_HOST,
             user=DB_USER,
             password=DB_PASSWORD,
             database=DB_NAME,
-            port=3306,
-            autocommit=True,
-            cursorclass=pymysql.cursors.DictCursor
+            autocommit=False,
         )
         yield conn
-    except MySQLError as err:
-        logging.exception("pymysql‑connect failed")
+    except mysql.connector.Error as err:
+        logging.exception("MySQL‑connect failed")
         raise HTTPException(500, f"DB connection failed: {err}")
     finally:
-        if conn:
+        if "conn" in locals() and conn.is_connected():
             conn.close()
 
 # --------------------------------------------------------------------
 # 4. FastAPI + CORS
 # --------------------------------------------------------------------
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI(title="PRISM Framework API")
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080"],  # 👈 your frontend dev origin
+    allow_origins=["*"],           # 🔒 tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -115,9 +98,13 @@ async def startup_db_check():
     loop = asyncio.get_running_loop()
 
     def _ping():
-        for conn in get_db_connection():
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
+        gen = get_db_connection()
+        conn = next(gen)  # open
+        conn.close()
+        try:
+            next(gen)     # finish generator
+        except StopIteration:
+            pass
 
     try:
         await loop.run_in_executor(None, _ping)
@@ -125,6 +112,7 @@ async def startup_db_check():
     except Exception as exc:
         logging.critical("Initial DB connection failed: %s", exc)
         raise SystemExit(2)
+
 # --------------------------------------------------------------------
 # 6. DTOs
 # --------------------------------------------------------------------
@@ -157,6 +145,11 @@ class Profile(BaseModel):
 
 class GenerationRequest(BaseModel):
     prompt: str
+
+# NEW: DTO for the task generation request from Stage 3 UI
+class TaskGenerationRequest(BaseModel):
+    competency_id: str
+    objective_text: str
 
 # look‑up DTOs --------------------------------------------------------
 class ProfessionOut(BaseModel): id:int; name:str
@@ -203,12 +196,13 @@ def inflate_ratings(row: Optional[Dict]) -> Dict:
         if key in ("id", "profile_id"):
             continue
         cur = nested
-        for i, part in enumerate(key.split("_")):
-            if i == len(part):
-                continue
-            if i == len(key.split("_")) - 1:
+        parts = key.split("_")
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
                 cur[part] = val
             else:
+                if part not in cur:
+                    cur[part] = {}
                 cur = cur[part]
     return nested
 
@@ -224,6 +218,55 @@ def rebuild_ale(obj_rows, ale_rows, skive_rows):
         for r in skive_rows:
             d["selectedSkiveApproaches"].setdefault(r["aspect"], []).append(r["approach"])
     return d
+
+# --------------------------------------------------------------------
+# NEW: 7.5 - Stage 3 Helper Dictionaries
+# --------------------------------------------------------------------
+
+# The bridge between Stage 2 objectives and Stage 3 GCRs
+COMPETENCY_TO_GCR_MAP = {
+    "skills-cognitive-analytical": "gcr-IG",
+    "skills-cognitive-decisionMaking": "gcr-ED",
+    "skills-cognitive-strategicPlanning": "gcr-SF",
+    "skills-cognitive-criticalEvaluation": "gcr-ED",
+    "skills-interpersonal-communication": "gcr-IG",
+    "skills-interpersonal-collaboration": "gcr-CP",
+    "skills-interpersonal-negotiation": "gcr-NA",
+    "skills-interpersonal-empathy": "gcr-NA",
+}
+
+# This map links the GCR ID to the UI component that should render it
+GCR_UI_COMPONENT_MAP = {
+    "gcr-IG": "ui-markdown-editor",
+    "gcr-ED": "ui-rank-and-write",
+    "gcr-SF": "ui-kanban-board",
+    "gcr-CP": "ui-team-chat-planner",
+    "gcr-NA": "ui-negotiation-dialogue",
+}
+
+# In a real app, this would be loaded from a JSON file library
+GCR_DEFINITIONS = {
+    "gcr-ED": {
+        "id": "gcr-ED",
+        "name": "Evaluative Decision",
+        "verbs": ["gather", "analyze", "prioritize", "communicate"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "options_list": {
+                    "type": "array",
+                    "description": "A list of 3-5 plausible options the user must choose from.",
+                    "items": {"type": "string"}
+                },
+                "criteria_md": {
+                    "type": "string",
+                    "description": "A markdown string describing the criteria for making the decision."
+                }
+            },
+        }
+    }
+    # ... other GCR definitions would be loaded here
+}
 
 # --------------------------------------------------------------------
 # 8.  Gemini endpoint
@@ -245,8 +288,7 @@ async def generate(req: GenerationRequest):
 # --------------------------------------------------------------------
 @app.get("/api/profiles", response_model=List[Dict])
 async def list_profiles(db=Depends(get_db_connection)):
-
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("""SELECT id,profession,department,specific_role,description,
                           archetype,updated_at
                    FROM profiles ORDER BY updated_at DESC""")
@@ -257,7 +299,7 @@ async def list_profiles(db=Depends(get_db_connection)):
 
 @app.get("/api/profiles/{pid}", response_model=Profile)
 async def load_profile(pid:int, db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("SELECT * FROM profiles WHERE id=%s", (pid,))
     p = cur.fetchone()
     if not p:
@@ -273,25 +315,25 @@ async def load_profile(pid:int, db=Depends(get_db_connection)):
     ski = cur.fetchall()
     cur.close()
 
-    return {
-        "id": pid,
-        "archetype": p["archetype"],
-        "roleData": {
-            "profession": p["profession"],
-            "department": p["department"],
-            "specificRole": p["specific_role"],
-            "description": p["description"],
-            "key_responsibilities": p["key_responsibilities"],
-            "day_to_day_tasks": p["day_to_day_tasks"],
-        },
-        "skiveRatings": inflate_ratings(flat),
-        "aleDesign": rebuild_ale(obj, ale, ski),
-    }
+    return Profile(
+        id=pid,
+        archetype=p["archetype"],
+        roleData=RoleData(
+            profession=p["profession"],
+            department=p["department"],
+            specificRole=p["specific_role"],
+            description=p["description"],
+            key_responsibilities=p["key_responsibilities"],
+            day_to_day_tasks=p["day_to_day_tasks"],
+        ),
+        skiveRatings=inflate_ratings(flat),
+        aleDesign=rebuild_ale(obj, ale, ski),
+    )
 
 
 @app.post("/api/profiles", response_model=Dict)
 async def save_profile(profile: Profile, db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     try:
         # ---------- UPDATE ----------
         if profile.id:
@@ -385,18 +427,82 @@ async def save_profile(profile: Profile, db=Depends(get_db_connection)):
         db.commit()
         return {"id": profile.id, "message": f"Profile {msg}."}
 
-    except MySQLError as err:
+    except mysql.connector.Error as err:
         db.rollback()
         raise HTTPException(500, f"DB error: {err}")
     finally:
         cur.close()
 
 # --------------------------------------------------------------------
+# NEW: 9.5 - Stage 3 Task Generation Endpoint
+# --------------------------------------------------------------------
+@app.post("/api/profiles/{pid}/generate-task", response_model=Dict)
+async def generate_task_for_competency(pid: int, req: TaskGenerationRequest, db=Depends(get_db_connection)):
+    # 1. Load the full profile to get all context
+    profile_data = await load_profile(pid, db)
+
+    # 2. Map Competency to GCR
+    # Normalize key e.g. "skills-cognitive-decisionMaking" from "skills-cognitive-decisionMaking-xyz"
+    competency_key = "-".join(req.competency_id.split('-')[:3])
+    gcr_id = COMPETENCY_TO_GCR_MAP.get(competency_key)
+    if not gcr_id:
+        raise HTTPException(404, f"No GCR mapped for competency '{competency_key}'")
+
+    gcr_definition = GCR_DEFINITIONS.get(gcr_id)
+    if not gcr_definition:
+        raise HTTPException(404, f"GCR definition for '{gcr_id}' not found")
+        
+    # 3. Construct the prompt for the AI Context Engine
+    role_data = profile_data.roleData
+    kras = role_data.key_responsibilities or "[]"
+    tasks = role_data.day_to_day_tasks or "[]"
+
+    prompt = f"""
+    You are a simulation engine for professional training. Generate a realistic scenario for a serious game.
+    ROLE: {role_data.specificRole} ({role_data.profession} / {role_data.department})
+    ROLE DESCRIPTION: {role_data.description}
+    KEY RESPONSIBILITIES: {kras}
+    TYPICAL TASKS: {tasks}
+    
+    The learning objective is: "{req.objective_text}"
+
+    The cognitive task is an '{gcr_definition["name"]}'.
+    
+    Based on all this context, populate the following JSON object according to the schema. Make the content specific and plausible for the role.
+    SCHEMA: {gcr_definition["input_schema"]}
+    
+    Respond with ONLY the populated JSON object, with no extra text or markdown formatting.
+    """
+
+    # 4. Call the AI and get the context
+    if not API_KEY:
+        raise HTTPException(500, "Gemini disabled on server.")
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        response_text = model.generate_content(prompt).text.strip().replace("```json", "").replace("```", "")
+        ai_generated_context = json.loads(response_text)
+    except Exception as e:
+        logging.error("AI Task Generation Failed: %s", e)
+        raise HTTPException(500, "Failed to generate or parse AI content.")
+
+    # 5. Assemble and return the final Task Payload
+    task_payload = {
+        "id": f"task_{pid}_{req.competency_id}",
+        "competencyId": req.competency_id,
+        "gcrId": gcr_id,
+        "uiComponentId": GCR_UI_COMPONENT_MAP.get(gcr_id, "ui-unknown"),
+        "context": ai_generated_context,
+        "outputSchema": gcr_definition.get("output_schema", {}), # Pass this along for later
+    }
+    
+    return task_payload
+
+# --------------------------------------------------------------------
 # 10.  Lookup routes (professions → departments → roles)
 # --------------------------------------------------------------------
 @app.get("/api/professions", response_model=List[ProfessionOut])
 async def list_professions(db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("SELECT id,name FROM professions ORDER BY name")
     rows = cur.fetchall()
     cur.close()
@@ -404,7 +510,7 @@ async def list_professions(db=Depends(get_db_connection)):
 
 @app.get("/api/departments", response_model=List[DepartmentOut])
 async def list_departments(profession_id:int=Query(...,ge=1), db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("SELECT id,profession_id,name FROM departments WHERE profession_id=%s ORDER BY name", (profession_id,))
     rows = cur.fetchall()
     cur.close()
@@ -412,7 +518,7 @@ async def list_departments(profession_id:int=Query(...,ge=1), db=Depends(get_db_
 
 @app.get("/api/roles", response_model=List[RoleOut])
 async def list_roles(department_id:int=Query(...,ge=1), db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("SELECT id,department_id,name FROM roles WHERE department_id=%s ORDER BY name", (department_id,))
     rows = cur.fetchall()
     cur.close()
@@ -421,12 +527,11 @@ async def list_roles(department_id:int=Query(...,ge=1), db=Depends(get_db_connec
 # master KRA list -----------------------------------------------------
 @app.get("/api/kras_master", response_model=List[Dict])
 async def list_kras_master(db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("""
         SELECT id,
-               label AS kra_label,
-               bucket,
-               profession AS profession_name
+               label,
+               bucket
         FROM kras_master
         ORDER BY bucket, label
     """)
@@ -439,7 +544,7 @@ async def list_kras_master(db=Depends(get_db_connection)):
 # --------------------------------------------------------------------
 @app.get("/api/profiles/{pid}/tasks", response_model=List[TaskOut])
 async def load_tasks(pid:int, db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("SELECT id,task_text,idx FROM profile_tasks WHERE profile_id=%s ORDER BY idx", (pid,))
     rows = cur.fetchall()
     cur.close()
@@ -460,7 +565,7 @@ async def save_tasks(pid:int, tasks:List[TaskIn], db=Depends(get_db_connection))
 
 @app.get("/api/profiles/{pid}/kras", response_model=List[KraOut])
 async def load_kras(pid:int, db=Depends(get_db_connection)):
-    cur = db.cursor(cursor=pymysql.cursors.DictCursor)
+    cur = db.cursor(dictionary=True)
     cur.execute("SELECT id,kra_id,custom_label FROM profile_kras WHERE profile_id=%s", (pid,))
     rows = cur.fetchall()
     cur.close()
@@ -480,11 +585,5 @@ async def save_kras(pid:int, kras:List[KraIn], db=Depends(get_db_connection)):
     return {"message": "KRAs saved"}
 
 # --------------------------------------------------------------------
-# 12. One‑time DDL helper comment
+# 12. One‑time DDL helper comment (No longer needed, assuming schema is up to date)
 # --------------------------------------------------------------------
-"""
-ALTER TABLE profiles
-  ADD COLUMN department VARCHAR(255),
-  ADD COLUMN key_responsibilities TEXT,
-  ADD COLUMN day_to_day_tasks TEXT;
-"""
