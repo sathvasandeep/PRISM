@@ -563,9 +563,7 @@ async def generate_task_for_competency(pid: int, req: TaskGenerationRequest, db=
 # ====================================================================
 @app.post("/api/tasks/{task_id}/submit", response_model=Dict)
 async def submit_task_response(task_id: int, response: TaskResponseIn, db=Depends(get_db_connection)):
-    # Note: In a real app, you'd add user authentication here to ensure
-    # the person submitting is the owner of the task.
-
+    # Note: In a real app, you'd add user authentication here
     cur = db.cursor()
     try:
         # First, save the user's response to the database
@@ -582,14 +580,83 @@ async def submit_task_response(task_id: int, response: TaskResponseIn, db=Depend
         
         db.commit()
         
-        # This is the ideal place to trigger a background job for evaluation
-        # For now, we just return a success message.
-        
         return {"message": "Response successfully saved!"}
     except mysql.connector.Error as err:
         db.rollback()
         logging.error(f"Failed to save task response for task {task_id}: {err}")
         raise HTTPException(500, "Database error while saving response.")
+    finally:
+        cur.close()
+
+
+# ====================================================================
+# NEW: 9.7 - Endpoint to evaluate a submitted response
+# ====================================================================
+@app.post("/api/responses/{task_id}/evaluate", response_model=Dict)
+async def evaluate_task_response(task_id: int, db=Depends(get_db_connection)):
+    cur = db.cursor(dictionary=True)
+    try:
+        # 1. Fetch the original task and the user's response
+        cur.execute("SELECT context_json FROM generated_tasks WHERE id=%s", (task_id,))
+        task_row = cur.fetchone()
+        if not task_row: raise HTTPException(404, "Original task not found.")
+        
+        cur.execute("SELECT id, response_payload_json FROM task_responses WHERE task_id=%s ORDER BY submitted_at DESC LIMIT 1", (task_id,))
+        response_row = cur.fetchone()
+        if not response_row: raise HTTPException(404, "Response not found for this task.")
+
+        task_context = task_row['context_json']
+        user_response = response_row['response_payload_json']
+        response_id = response_row['id']
+
+        # 2. Construct the evaluation prompt for the AI
+        eval_prompt = f"""
+        You are an expert evaluator for a professional training simulation.
+        Your task is to score a user's response and provide constructive feedback.
+        
+        **Original Task Scenario:**
+        {task_context}
+
+        **User's Response:**
+        {user_response}
+
+        **Evaluation Criteria:**
+        1.  **Clarity (1-5):** Is the rationale clear and easy to understand?
+        2.  **Justification (1-5):** Does the user effectively justify their ranking based on the provided criteria?
+        3.  **Prioritization Logic (1-5):** Does the user's ranking logically follow from the scenario's constraints and goals?
+
+        **Instructions:**
+        Respond with ONLY a JSON object in the following format. Do not include any other text or markdown.
+        {{
+          "score": <average_score_as_float_between_1_and_5>,
+          "feedback": "<detailed_feedback_as_string_explaining_the_score>"
+        }}
+        """
+
+        # 3. Call the AI
+        if not API_KEY: raise HTTPException(500, "Gemini is not configured.")
+        model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        raw_eval_response = model.generate_content(eval_prompt).text
+        
+        # 4. Parse the AI's structured response
+        clean_eval_response = raw_eval_response.strip().replace("```json", "").replace("```", "").strip()
+        eval_data = json.loads(clean_eval_response)
+        score = eval_data.get("score")
+        feedback = eval_data.get("feedback")
+
+        # 5. Update the database with the evaluation results
+        cur.execute(
+            "UPDATE task_responses SET evaluation_score = %s, evaluation_feedback = %s WHERE id = %s",
+            (score, feedback, response_id)
+        )
+        db.commit()
+
+        return {"score": score, "feedback": feedback}
+
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Failed to evaluate response for task {task_id}: {e}")
+        raise HTTPException(500, "An error occurred during evaluation.")
     finally:
         cur.close()
 # --------------------------------------------------------------------
