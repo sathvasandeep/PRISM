@@ -81,12 +81,19 @@ def get_db_connection() -> Generator[mysql.connector.MySQLConnection, None, None
 # 4. FastAPI + CORS
 # --------------------------------------------------------------------
 app = FastAPI(title="PRISM Framework API")
+origins = [
+    "http://localhost",
+    "http://localhost:8080", # Your frontend's origin
+    "http://127.0.0.1",
+    "http://127.0.0.1:8080",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],           # 🔒 tighten in production
+    allow_origins=origins, # Use the specific list of origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],    # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],    # Allows all headers
 )
 
 # --------------------------------------------------------------------
@@ -114,7 +121,7 @@ async def startup_db_check():
         raise SystemExit(2)
 
 # --------------------------------------------------------------------
-# 6. DTOs
+# 6. DTOs (The Correct, Consolidated Block)
 # --------------------------------------------------------------------
 class RoleData(BaseModel):
     profession: str
@@ -146,20 +153,23 @@ class Profile(BaseModel):
 class GenerationRequest(BaseModel):
     prompt: str
 
-# NEW: DTO for the task generation request from Stage 3 UI
 class TaskGenerationRequest(BaseModel):
     competency_id: str
     objective_text: str
+    flavor_id: Optional[str] = None
 
-# look‑up DTOs --------------------------------------------------------
+class TaskResponseIn(BaseModel):
+    response_payload: Dict
+
+# --- MOVED FROM LATER IN THE FILE ---
+# look‑up DTOs
 class ProfessionOut(BaseModel): id:int; name:str
 class DepartmentOut(BaseModel): id:int; profession_id:int; name:str
 class RoleOut(BaseModel):       id:int; department_id:int; name:str
 
-# task / KRA DTOs -----------------------------------------------------
+# task / KRA DTOs
 class TaskIn(BaseModel):  task_text:str; idx:int
 class TaskOut(TaskIn):    id:int
-
 class KraIn(BaseModel):  kra_id:Optional[int]=None; custom_label:Optional[str]=None
 class KraOut(BaseModel): id:int; kra_id:Optional[int]; custom_label:Optional[str]
 
@@ -266,6 +276,21 @@ GCR_DEFINITIONS = {
         }
     }
     # ... other GCR definitions would be loaded here
+
+}
+# 4. The library of different scenario "flavors" for each GCR
+GCR_FLAVORS = {
+    "gcr-ED": [
+        {"id": "prioritization", "name": "Prioritization Challenge"},
+        {"id": "resource_allocation", "name": "Resource Allocation Dilemma"},
+        {"id": "risk_mitigation", "name": "Risk Mitigation Choice"},
+        {"id": "ethical_dilemma", "name": "Ethical Dilemma"},
+    ],
+    "gcr-SF": [
+        {"id": "new_market_entry", "name": "New Market Entry Plan"},
+        {"id": "product_roadmap", "name": "Product Roadmap Creation"},
+    ]
+    # ... add flavors for other GCRs as needed
 }
 
 # --------------------------------------------------------------------
@@ -433,70 +458,140 @@ async def save_profile(profile: Profile, db=Depends(get_db_connection)):
     finally:
         cur.close()
 
-# --------------------------------------------------------------------
-# NEW: 9.5 - Stage 3 Task Generation Endpoint
-# --------------------------------------------------------------------
+# ====================================================================
+# The Complete, Corrected Stage 3 Task Generation Endpoint
+# ====================================================================
 @app.post("/api/profiles/{pid}/generate-task", response_model=Dict)
 async def generate_task_for_competency(pid: int, req: TaskGenerationRequest, db=Depends(get_db_connection)):
-    # 1. Load the full profile to get all context
+    # --- Step 1: Load Profile and Map to GCR ---
     profile_data = await load_profile(pid, db)
-
-    # 2. Map Competency to GCR
-    # Normalize key e.g. "skills-cognitive-decisionMaking" from "skills-cognitive-decisionMaking-xyz"
     competency_key = "-".join(req.competency_id.split('-')[:3])
     gcr_id = COMPETENCY_TO_GCR_MAP.get(competency_key)
-    if not gcr_id:
-        raise HTTPException(404, f"No GCR mapped for competency '{competency_key}'")
-
+    if not gcr_id: raise HTTPException(404, f"No GCR mapped for competency '{competency_key}'")
     gcr_definition = GCR_DEFINITIONS.get(gcr_id)
-    if not gcr_definition:
-        raise HTTPException(404, f"GCR definition for '{gcr_id}' not found")
-        
-    # 3. Construct the prompt for the AI Context Engine
-    role_data = profile_data.roleData
-    kras = role_data.key_responsibilities or "[]"
-    tasks = role_data.day_to_day_tasks or "[]"
+    if not gcr_definition: raise HTTPException(404, f"GCR definition for '{gcr_id}' not found")
+    
+    # --- Step 2: Build the AI Prompt with Flavor ---
+    flavor_prompt_injection = ""
+    if req.flavor_id and GCR_FLAVORS.get(gcr_id):
+        flavor = next((f for f in GCR_FLAVORS[gcr_id] if f["id"] == req.flavor_id), None)
+        if flavor:
+            if flavor["id"] == "prioritization": flavor_prompt_injection = "The core of this scenario MUST be about prioritizing a list of competing tasks, features, or options under constraints."
+            elif flavor["id"] == "resource_allocation": flavor_prompt_injection = "The core of this scenario MUST be about allocating a limited resource (like budget, time, or personnel) among several valid options."
+            elif flavor["id"] == "risk_mitigation": flavor_prompt_injection = "The core of this scenario MUST be a choice between a high-reward, high-risk path and a lower-reward, low-risk path."
+            elif flavor["id"] == "ethical_dilemma": flavor_prompt_injection = "The core of this scenario MUST be an ethical dilemma where there is no clear right answer, forcing a trade-off between competing values."
 
-    prompt = f"""
-    You are a simulation engine for professional training. Generate a realistic scenario for a serious game.
+    # --- THIS IS THE FIX ---
+    # Define the role_data variable from the loaded profile BEFORE using it.
+    role_data = profile_data.roleData
+    
+    # Now, construct the prompt using the defined variable.
+    prompt = f"""You are a simulation engine for professional training. Generate a realistic scenario for a serious game.
+
     ROLE: {role_data.specificRole} ({role_data.profession} / {role_data.department})
     ROLE DESCRIPTION: {role_data.description}
-    KEY RESPONSIBILITIES: {kras}
-    TYPICAL TASKS: {tasks}
+    KEY RESPONSIBILITIES: {role_data.key_responsibilities or "[]"}
+    TYPICAL TASKS: {role_data.day_to_day_tasks or "[]"}
     
     The learning objective is: "{req.objective_text}"
 
     The cognitive task is an '{gcr_definition["name"]}'.
-    
+
+    *** IMPORTANT INSTRUCTION: {flavor_prompt_injection if flavor_prompt_injection else "Generate a standard scenario for this cognitive task."} ***
+
     Based on all this context, populate the following JSON object according to the schema. Make the content specific and plausible for the role.
     SCHEMA: {gcr_definition["input_schema"]}
-    
-    Respond with ONLY the populated JSON object, with no extra text or markdown formatting.
-    """
 
-    # 4. Call the AI and get the context
-    if not API_KEY:
-        raise HTTPException(500, "Gemini disabled on server.")
+    Respond with ONLY the populated JSON object, with no extra text or markdown formatting."""
+
+    # --- Step 3: Call AI and Parse Response ---
+    if not API_KEY: raise HTTPException(500, "Gemini disabled on server.")
+    ai_generated_context = {}
     try:
         model = genai.GenerativeModel("gemini-1.5-flash-latest")
-        response_text = model.generate_content(prompt).text.strip().replace("```json", "").replace("```", "")
-        ai_generated_context = json.loads(response_text)
-    except Exception as e:
-        logging.error("AI Task Generation Failed: %s", e)
-        raise HTTPException(500, "Failed to generate or parse AI content.")
+        raw_response = model.generate_content(prompt).text
+        
+        # --- NEW, MORE ROBUST PARSING LOGIC ---
+        # 1. Clean the string of markdown and whitespace
+        # The .strip() is the key part that will fix your current error.
+        clean_response = raw_response.strip().replace("```json", "").replace("```", "").strip()
 
-    # 5. Assemble and return the final Task Payload
+        # 2. Let json.loads be the validator. If it fails, the string is not valid JSON.
+        ai_generated_context = json.loads(clean_response)
+
+    except json.JSONDecodeError as e:
+        logging.error(f"AI returned a string that could not be parsed as JSON. Error: {e}")
+        logging.error(f"--- Raw AI Response was: ---\n{raw_response}\n-----------------------------")
+        raise HTTPException(500, "AI returned malformed JSON.")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred during AI Task Generation: {e}")
+        raise HTTPException(500, "An unexpected error occurred while generating the task.")
+
+
+    # --- Step 4: Save the Generated Task to the Database ---
+    new_task_id = None
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """INSERT INTO generated_tasks 
+               (profile_id, objective_competency_id, gcr_id, flavor_id, context_json) 
+               VALUES (%s, %s, %s, %s, %s)""",
+            (pid, req.competency_id, gcr_id, req.flavor_id, json.dumps(ai_generated_context))
+        )
+        new_task_id = cur.lastrowid
+        db.commit()
+    except mysql.connector.Error as err:
+        db.rollback()
+        logging.error(f"Failed to save generated task: {err}")
+        raise HTTPException(500, "Database error while saving generated task.")
+    finally:
+        cur.close()
+    
+    # --- Step 5: Assemble and Return the Final Payload ---
     task_payload = {
-        "id": f"task_{pid}_{req.competency_id}",
+        "id": new_task_id,
         "competencyId": req.competency_id,
         "gcrId": gcr_id,
         "uiComponentId": GCR_UI_COMPONENT_MAP.get(gcr_id, "ui-unknown"),
         "context": ai_generated_context,
-        "outputSchema": gcr_definition.get("output_schema", {}), # Pass this along for later
+        "outputSchema": gcr_definition.get("output_schema", {}),
+        "flavorId": req.flavor_id
     }
-    
     return task_payload
+# ====================================================================
+# NEW: 9.6 - Endpoint to receive user responses for a task
+# ====================================================================
+@app.post("/api/tasks/{task_id}/submit", response_model=Dict)
+async def submit_task_response(task_id: int, response: TaskResponseIn, db=Depends(get_db_connection)):
+    # Note: In a real app, you'd add user authentication here to ensure
+    # the person submitting is the owner of the task.
 
+    cur = db.cursor()
+    try:
+        # First, save the user's response to the database
+        cur.execute(
+            "INSERT INTO task_responses (task_id, response_payload_json) VALUES (%s, %s)",
+            (task_id, json.dumps(response.response_payload))
+        )
+        
+        # Then, update the status of the original task to 'completed'
+        cur.execute(
+            "UPDATE generated_tasks SET status = 'completed' WHERE id = %s",
+            (task_id,)
+        )
+        
+        db.commit()
+        
+        # This is the ideal place to trigger a background job for evaluation
+        # For now, we just return a success message.
+        
+        return {"message": "Response successfully saved!"}
+    except mysql.connector.Error as err:
+        db.rollback()
+        logging.error(f"Failed to save task response for task {task_id}: {err}")
+        raise HTTPException(500, "Database error while saving response.")
+    finally:
+        cur.close()
 # --------------------------------------------------------------------
 # 10.  Lookup routes (professions → departments → roles)
 # --------------------------------------------------------------------

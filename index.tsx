@@ -110,7 +110,13 @@ interface RoleData {
     day_to_day_tasks?: string;     // JSON string of string[]
 }
 interface SelectedKRA {
-    id: number | null; // null for custom KRAs
+    id: string | null; // null for custom KRAs
+    competencyId: string;
+    gcrId: string;
+    uiComponentId: string;
+    context: any; 
+    outputSchema: any;
+    flavorId?: string;
     label: string;
 }
 interface MasterKRA {
@@ -583,117 +589,107 @@ function ALEDesigner(
    Stage 3 component ▸  TASK FACTORY
    ================================================================= */
 
-// NEW: A dispatcher component to render the correct UI for a task
 function TaskRenderer({ task }: { task: TaskPayload }) {
-  const { uiComponentId, context } = task;
+  const { uiComponentId, context, flavorId, id: taskId } = task;
+  const flavorName = flavorId ? flavorId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : "Standard Task";
+  const [response, setResponse] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitMessage, setSubmitMessage] = useState("");
 
-  // This is the UI Component Mapper in action
+  const handleSubmit = async () => {
+      if (!response.trim()) { alert("Please provide a response before submitting."); return; }
+      setIsSubmitting(true); setSubmitMessage("");
+      try {
+          const res = await fetch(`${API_ROOT}/api/tasks/${taskId}/submit`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ response_payload: { ranking_and_rationale_txt: response } })
+          });
+          if (!res.ok) throw new Error("Submission failed!");
+          const data = await res.json();
+          setSubmitMessage(data.message || "Response saved successfully!");
+      } catch (e) {
+          setSubmitMessage((e as Error).message);
+      } finally {
+          setIsSubmitting(false);
+      }
+  };
+
   switch (uiComponentId) {
     case 'ui-rank-and-write':
-      // This is a placeholder for a real interactive component
       return (
         <div className="p-4 border bg-blue-50 border-blue-200 rounded-lg animate-fade-in">
-          <h5 className="font-bold text-blue-800">Task: Rank & Justify</h5>
-          <p className="text-sm text-gray-700 mt-2 mb-3">
-            <strong>Scenario:</strong> Based on the criteria <i className="font-medium">"{context.criteria_md}"</i>, rank the following options and provide your rationale.
-          </p>
-          <div className="p-3 bg-white border rounded-md">
-            <h6 className="font-semibold mb-2">Options:</h6>
-            <ul className="list-decimal pl-5 space-y-1">
-              {(context.options_list || []).map((opt: string, i: number) => <li key={i} className="text-gray-800">{opt}</li>)}
-            </ul>
+          <h5 className="font-bold text-blue-800">Task: Rank & Justify <span className="text-xs font-normal bg-blue-100 text-blue-700 px-2 py-0.5 ml-2 rounded-full">{flavorName}</span></h5>
+          <p className="text-sm text-gray-700 mt-2 mb-3"><strong>Scenario:</strong> {context.criteria_md}</p>
+          <div className="p-3 bg-white border rounded-md"><h6 className="font-semibold mb-2">Options:</h6><ul className="list-decimal pl-5 space-y-1">{(context.options_list || []).map((opt: string, i: number) => <li key={i} className="text-gray-800">{opt}</li>)}</ul></div>
+          <textarea className="w-full mt-3 p-2 border rounded" rows={4} placeholder="Your ranking and detailed rationale..." value={response} onChange={(e) => setResponse(e.target.value)} disabled={!!submitMessage}/>
+          <div className="mt-2 flex items-center justify-end gap-4">
+              {submitMessage && <span className={`text-sm font-medium ${submitMessage.includes('failed') ? 'text-red-600' : 'text-green-700'}`}>{submitMessage}</span>}
+              <button onClick={handleSubmit} disabled={isSubmitting || !!submitMessage} className="px-4 py-1.5 bg-blue-600 text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50">{isSubmitting ? "Submitting..." : "Submit Response"}</button>
           </div>
-          <textarea className="w-full mt-3 p-2 border rounded" rows={4} placeholder="Your ranking (e.g., 1. Option C, 2. Option A...) and detailed rationale..."></textarea>
-        </div>
-      );
-    case 'ui-markdown-editor':
-      return <div className="p-4 border bg-green-50 border-green-200 rounded-lg animate-fade-in">Render a Markdown editor here for Insight Generation...</div>;
-    case 'ui-kanban-board':
-       return <div className="p-4 border bg-purple-50 border-purple-200 rounded-lg animate-fade-in">Render a Kanban board here for Strategic Formulation...</div>;
+        </div>);
     default:
       return <div className="p-4 border bg-red-100 text-red-700 rounded-lg">Error: Unknown UI Component ID '{uiComponentId}'</div>;
   }
 }
 
-// NEW: The main component for Stage 3
 function TaskFactory({ profile, onBack }: { profile: Profile; onBack: () => void; }) {
-  const [tasks, setTasks] = useState<Record<string, TaskPayload | null>>({}); // competencyId -> TaskPayload
+  const [tasks, setTasks] = useState<Record<string, TaskPayload[]>>({});
   const [loadingState, setLoadingState] = useState<Record<string, boolean>>({});
-
   const learningObjectives = Object.entries(profile.aleDesign.learningObjectives);
-
-  const generateTask = async (competencyId: string, objectiveText: string) => {
-    setLoadingState(p => ({...p, [competencyId]: true}));
+  const GCR_FLAVORS: Record<string, {id:string, name:string}[]> = { "gcr-ED": [ {id: "prioritization", name: "Prioritization"}, {id: "resource_allocation", name: "Resource Allocation"}, {id: "risk_mitigation", name: "Risk Mitigation"}, {id: "ethical_dilemma", name: "Ethical Dilemma"},] };
+  const COMPETENCY_TO_GCR_MAP: Record<string, string> = { "skills-cognitive-decisionMaking": "gcr-ED", "skills-cognitive-strategicPlanning": "gcr-SF", "skills-cognitive-analytical": "gcr-IG", "skills-cognitive-criticalEvaluation": "gcr-ED", "skills-interpersonal-communication": "gcr-IG", "skills-interpersonal-collaboration": "gcr-CP", "skills-interpersonal-negotiation": "gcr-NA", "skills-interpersonal-empathy": "gcr-NA", };
+  const generateTask = async (competencyId: string, objectiveText: string, flavorId: string) => {
+    const loadingKey = competencyId + flavorId;
+    setLoadingState(p => ({...p, [loadingKey]: true}));
     try {
-      const res = await fetch(`${API_ROOT}/api/profiles/${profile.id}/generate-task`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ competency_id: competencyId, objective_text: objectiveText }),
-      });
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      const res = await fetch(`${API_ROOT}/api/profiles/${profile.id}/generate-task`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ competency_id: competencyId, objective_text: objectiveText, flavor_id: flavorId }), });
+      if (!res.ok) { throw new Error(`Server returned status ${res.status}`); }
       const taskPayload: TaskPayload = await res.json();
-      setTasks(p => ({ ...p, [competencyId]: taskPayload }));
+      setTasks(p => ({ ...p, [competencyId]: [...(p[competencyId] || []), taskPayload] }));
     } catch (e) {
-      alert(`Failed to generate task: ${(e as Error).message}`);
+      alert(`Failed to generate task. Error: ${(e as Error).message}`); console.error("Task Generation Error:", e);
     } finally {
-        setLoadingState(p => ({...p, [competencyId]: false}));
+      setLoadingState(p => ({...p, [loadingKey]: false}));
     }
   };
-
   return (
     <>
-      <div className="px-6 py-5 border-b border-gray-200">
-        <h2 className="text-lg font-semibold text-gray-800">Stage 3: Task Generator</h2>
-        <p className="text-sm text-gray-600">Generate and configure interactive tasks based on your design.</p>
-      </div>
+      <div className="px-6 py-5 border-b"><h2 className="text-lg font-semibold">Stage 3: Task Generator</h2><p className="text-sm text-gray-600">Generate tasks based on your design.</p></div>
       <div className="p-6 space-y-6 bg-gray-50">
-        <h3 className="text-xl font-semibold text-gray-800 border-b pb-2 mb-4">Generated Tasks</h3>
+        <h3 className="text-xl font-semibold border-b pb-2 mb-4">Generated Tasks</h3>
         {learningObjectives.length === 0 && <p className="text-center text-gray-500 py-4">No learning objectives defined in Stage 2.</p>}
-        {learningObjectives.map(([competencyId, objectiveText]) => (
-          <div key={competencyId} className="p-4 bg-white border rounded-lg shadow-sm">
-            <h4 className="font-semibold text-gray-800 capitalize">Objective for: <span className="text-blue-700">{competencyId.split('-').pop()}</span></h4>
-            <p className="text-sm text-gray-600 italic my-2">"{objectiveText}"</p>
-            <div className="mt-4">
-              {tasks[competencyId] ? (
-                <TaskRenderer task={tasks[competencyId]!} />
-              ) : (
-                <button
-                  onClick={() => generateTask(competencyId, objectiveText)}
-                  disabled={loadingState[competencyId]}
-                  className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 disabled:opacity-60 transition-all"
-                >
-                  <Sparkles size={16}/>
-                  {loadingState[competencyId] ? 'Generating...' : 'Generate Interactive Task'}
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
+        {learningObjectives.map(([competencyId, objectiveText]) => {
+            const gcrId = COMPETENCY_TO_GCR_MAP[competencyId.split('-').slice(0,3).join('-')];
+            const flavors = gcrId ? GCR_FLAVORS[gcrId] : [];
+            return (
+              <div key={competencyId} className="p-4 bg-white border rounded-lg shadow-sm">
+                <h4 className="font-semibold capitalize">Objective for: <span className="text-blue-700">{competencyId.split('-').pop()}</span></h4>
+                <p className="text-sm text-gray-600 italic my-2">"{objectiveText}"</p>
+                <div className="space-y-4 mt-4">
+                    <details className="relative inline-block text-left group">
+                        <summary className="inline-flex items-center gap-2 justify-center w-full rounded-md border shadow-sm px-4 py-2 bg-white text-sm font-medium hover:bg-gray-50 cursor-pointer"><Sparkles size={16}/> Generate New Task <ChevronsRight size={16} className="transform transition-transform group-open:rotate-90" /></summary>
+                        <div className="origin-top-left absolute left-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10 hidden group-open:block">
+                            <div className="py-1">{flavors && flavors.length > 0 ? (flavors.map(flavor => (<a key={flavor.id} onClick={(e) => { e.preventDefault(); generateTask(competencyId, objectiveText, flavor.id); }} href="#" className="text-gray-700 block px-4 py-2 text-sm hover:bg-gray-100">{flavor.name}</a>))) : (<a onClick={(e) => { e.preventDefault(); generateTask(competencyId, objectiveText, 'default'); }} href="#" className="text-gray-700 block px-4 py-2 text-sm hover:bg-gray-100">Generate Standard Task</a>)}</div>
+                        </div>
+                    </details>
+                    <div className="space-y-3 pt-3">{(tasks[competencyId] || []).map((task) => (<TaskRenderer key={task.id} task={task} />))}</div>
+                </div>
+              </div>);
+        })}
       </div>
-       <div className="px-6 py-4 border-t border-gray-200 flex justify-between bg-white items-center">
-        <button onClick={onBack} className="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"><ArrowLeft size={18}/> Back to Stage 2</button>
-        {/* You can add a final "Finish & Exit" button here later */}
-      </div>
-    </>
-  );
+      <div className="px-6 py-4 border-t flex justify-between items-center"><button onClick={onBack} className="flex items-center gap-2 px-6 py-2 border rounded-lg hover:bg-gray-100"><ArrowLeft size={18}/> Back to Stage 2</button></div>
+    </>);
 }
-
 
 /* =================================================================
    PrismApp ▸ stage switcher
    ================================================================= */
-function PrismApp({ profile:initial, onExit }:{
-  profile:Profile; onExit:()=>void;
-}){
-  // NEW: Added "tasking" to the stage state
+function PrismApp({ profile:initial, onExit }:{ profile:Profile; onExit:()=>void; }){
   const [stage,setStage] = useState<"profiling"|"designing"|"tasking">("profiling");
-  const [profile,setProfile]   = useState<Profile>(initial);
+  const [profile,setProfile] = useState<Profile>(initial);
   const [saveInfo,setSaveInfo] = useState({ loading:false, message:"", isError:false });
-  const updateProfile = (fn:(p:Profile)=>Profile)=>{
-    setProfile(fn);
-    if(saveInfo.message) setSaveInfo({ loading:false, message:"", isError:false });
-  };
-  
+  const updateProfile = (fn:(p:Profile)=>Profile)=>{ setProfile(fn); if(saveInfo.message) setSaveInfo({ loading:false, message:"", isError:false }); };
   const saveProfile = async ()=>{
     setSaveInfo({ loading:true, message:"", isError:false });
     try {
@@ -702,48 +698,24 @@ function PrismApp({ profile:initial, onExit }:{
       const data = await res.json();
       updateProfile(p=>({ ...p, id:data.id }));
       setSaveInfo({ loading:false, message:data.message||"Saved successfully!", isError:false });
+      setTimeout(() => setSaveInfo(s => s.message.includes("success") ? { ...s, message: "" } : s), 3000);
     }catch(e){
       setSaveInfo({ loading:false, message:(e as Error).message, isError:true });
     }
   };
-
-  const handleProceedToStage3 = async () => {
-    // NEW: The finish button from Stage 2 now goes to Stage 3
-    await saveProfile();
-    setStage("tasking");
-  };
-
+  const handleProceedToStage3 = async () => { await saveProfile(); if (!saveInfo.isError) { setStage("tasking"); }};
   const stageComponents = {
-    profiling: <RoleProfiler
-                  profile={profile}
-                  onProfileChange={updateProfile}
-                  onComplete={()=>setStage("designing")}
-                  onSave ={saveProfile}
-                  saveStatus={saveInfo}/>,
-    designing: <ALEDesigner
-                  profile={profile}
-                  onProfileChange={updateProfile}
-                  onBack ={()=>setStage("profiling")}
-                  onFinish={handleProceedToStage3} // NEW: Hooked up to the new handler
-                  onSave ={saveProfile}
-                  saveStatus={saveInfo}/>,
-    // NEW: Added Stage 3 component to the dispatcher
-    tasking: <TaskFactory 
-                profile={profile} 
-                onBack={()=>setStage("designing")} />,
+    profiling: <RoleProfiler profile={profile} onProfileChange={updateProfile} onComplete={()=>setStage("designing")} onSave={saveProfile} saveStatus={saveInfo}/>,
+    designing: <ALEDesigner profile={profile} onProfileChange={updateProfile} onBack={()=>setStage("profiling")} onFinish={handleProceedToStage3} onSave={saveProfile} saveStatus={saveInfo}/>,
+    tasking: <TaskFactory profile={profile} onBack={()=>setStage("designing")} />,
   };
-
   return (
     <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
       <button onClick={onExit} className="mb-4 flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900"><ArrowLeft size={16}/> Back to Dashboard</button>
       <div className="bg-white rounded-lg shadow-lg overflow-hidden">
         <header className="px-6 py-4 border-b border-gray-200 bg-gray-50">
           <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">PRISM Framework</h1>
-              <p className="text-gray-600">Professional Role Identity & SKIVE-Mapped Environments</p>
-            </div>
-            {/* NEW: Added Stage 3 to the visual indicator */}
+            <div><h1 className="text-2xl font-bold text-gray-900">PRISM Framework</h1><p className="text-gray-600">Professional Role Identity & SKIVE-Mapped Environments</p></div>
             <div className="flex gap-2">
               <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='profiling' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 1</span>
               <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='designing' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 2</span>
@@ -753,19 +725,15 @@ function PrismApp({ profile:initial, onExit }:{
         </header>
         {stageComponents[stage as keyof typeof stageComponents]}
       </div>
-    </div>
-  );
+    </div>);
 }
 
 /* =================================================================
    ProfileLoader  +  AppContainer
    ================================================================= */
-function ProfileLoader({ onSelectProfile }:{
-  onSelectProfile:(p:Profile)=>void;
-}){
+function ProfileLoader({ onSelectProfile }:{ onSelectProfile:(p:Profile)=>void; }){
   const [list,setList] = useState<SavedSummary[]>([]);
-  const [state,setState] = useState<{loading:boolean; err:string|null}>
-                            ({ loading:true, err:null });
+  const [state,setState] = useState<{loading:boolean; err:string|null}>({ loading:true, err:null });
   const loadAll = async ()=>{
     setState({ loading:true, err:null });
     try{
@@ -786,11 +754,7 @@ function ProfileLoader({ onSelectProfile }:{
       const res = await fetch(`${API_ROOT}/api/profiles/${id}`);
       if(!res.ok) throw new Error(`Failed to load profile: ${res.status}`);
       const loadedData = await res.json();
-      const completeProfile = {
-        ...getInitialProfile(),
-        ...loadedData,
-        id: loadedData.id,
-      };
+      const completeProfile = { ...getInitialProfile(), ...loadedData, id: loadedData.id, };
       onSelectProfile(completeProfile);
     }catch(e){
       setState({ loading:false, err:(e as Error).message });
@@ -801,41 +765,26 @@ function ProfileLoader({ onSelectProfile }:{
       <div className="bg-white rounded-lg shadow-lg">
         <header className="p-6 border-b"><h1 className="text-2xl font-bold text-gray-900">PRISM Profile Dashboard</h1><p className="text-gray-600">Select a profile to edit or create a new one.</p></header>
         <main className="p-6">
-          <button onClick={()=>onSelectProfile(getInitialProfile())} className="w-full flex items-center justify-center gap-2 mb-6 px-4 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors"><PlusCircle size={20}/> Create New Profile</button>
+          <button onClick={()=>onSelectProfile(getInitialProfile())} className="w-full flex items-center justify-center gap-2 mb-6 px-4 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700"><PlusCircle size={20}/> Create New Profile</button>
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Existing Profiles</h2>
           {state.loading && <p className="text-center py-4">Loading profiles…</p>}
-          {state.err && (<div className="py-8 px-4 text-center bg-red-50 border border-red-200 rounded-lg"><ServerCrash className="mx-auto text-red-500 mb-2" size={32}/><p className="font-semibold text-red-700">Connection Error</p><p className="text-sm text-red-600 mb-4">{state.err}</p><button onClick={loadAll} className="flex items-center mx-auto gap-2 px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200"><RefreshCw size={14}/> Retry</button></div>)}
-          {(!state.loading && !state.err) && (
-            list.length===0
-              ? <p className="text-center text-gray-500 py-4">No saved profiles found.</p>
-              : <ul className="space-y-3">{list.map(p=>(<li key={p.id} onClick={()=>loadOne(p.id)} className="grid grid-cols-3 items-center p-4 bg-gray-50 border border-gray-200 rounded-lg hover:bg-blue-50 hover:border-blue-300 cursor-pointer transition-colors">
-                  <div className="col-span-2">
-                    <p className="font-semibold text-blue-800">{p.specific_role||"Untitled Role"}</p>
-                    <p className="text-sm text-gray-600">{p.profession}{p.department ? ` / ${p.department}` : ''}</p>
-                    {p.archetype &&<span className="inline-block mt-1 text-xs font-medium bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{p.archetype}</span>}
-                  </div>
-                  <div className="text-right text-sm">
-                    <p className="text-gray-500">Last updated</p>
-                    <p className="font-medium text-gray-700">{new Date(p.updated_at).toLocaleDateString()}</p>
-                  </div>
-                </li>))}</ul>
+          {state.err && (<div className="py-8 px-4 text-center bg-red-50 border-red-200 rounded-lg"><ServerCrash className="mx-auto text-red-500 mb-2" size={32}/><p className="font-semibold text-red-700">Connection Error</p><p className="text-sm text-red-600 mb-4">{state.err}</p><button onClick={loadAll} className="flex items-center mx-auto gap-2 px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200"><RefreshCw size={14}/> Retry</button></div>)}
+          {(!state.loading && !state.err) && (list.length===0 ? <p className="text-center text-gray-500 py-4">No saved profiles found.</p> : <ul className="space-y-3">{list.map(p=>(<li key={p.id} onClick={()=>loadOne(p.id)} className="grid grid-cols-3 items-center p-4 bg-gray-50 border rounded-lg hover:bg-blue-50 hover:border-blue-300 cursor-pointer">
+              <div className="col-span-2"><p className="font-semibold text-blue-800">{p.specific_role||"Untitled Role"}</p><p className="text-sm text-gray-600">{p.profession}{p.department ? ` / ${p.department}` : ''}</p>{p.archetype &&<span className="inline-block mt-1 text-xs font-medium bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{p.archetype}</span>}</div>
+              <div className="text-right text-sm"><p className="text-gray-500">Last updated</p><p className="font-medium text-gray-700">{new Date(p.updated_at).toLocaleDateString()}</p></div>
+            </li>))}</ul>
           )}
         </main>
       </div>
-    </div>
-  );
+    </div>);
 }
 
 function AppContainer(){
   const [active,setActive] = useState<Profile|null>(null);
-  return active
-    ? <PrismApp profile={active} onExit={()=>setActive(null)}/>
-    : <ProfileLoader onSelectProfile={setActive}/>;
+  return active ? <PrismApp profile={active} onExit={()=>setActive(null)}/> : <ProfileLoader onSelectProfile={setActive}/>;
 }
 
 /* =================================================================
    Mount React
    ================================================================= */
-ReactDOM
-  .createRoot(document.getElementById("root")!)
-  .render(<React.StrictMode><AppContainer/></React.StrictMode>);
+ReactDOM.createRoot(document.getElementById("root")!).render(<React.StrictMode><AppContainer/></React.StrictMode>);
