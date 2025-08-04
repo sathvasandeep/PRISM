@@ -16,8 +16,9 @@ import {
 } from "recharts";
 import {
   Save, Eye, Trash2, X, ChevronsRight, ArrowLeft, PlusCircle,
-  ServerCrash, RefreshCw, CheckCircle, Sparkles
+  ServerCrash, RefreshCw, CheckCircle, Sparkles, MoveVertical
 } from "lucide-react";
+import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
 
 /* ------------- Static data (from paper) ------------ */
 const professionalRolesData = {
@@ -81,327 +82,77 @@ function ALEDesigner({ profile, onProfileChange, onBack, onSave, onFinish, saveS
         </section></div><div className="px-6 py-4 border-t border-gray-200 flex justify-between bg-white items-center"><button onClick={onBack} className="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100"><ArrowLeft size={18}/> Back to Profiler</button><div className="flex items-center gap-4">{saveStatus.message && <span className={`text-sm font-medium ${saveStatus.isError ? "text-red-600" : "text-green-600"}`}>{saveStatus.message}</span>}<button onClick={onSave} disabled={saveStatus.loading} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"><Save size={16}/> {saveStatus.loading ? "Saving…" : "Save Design"}</button><button onClick={onFinish} className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700"><CheckCircle size={18}/> Save & Proceed to Stage 3</button></div></div></>); }
 
 /* =================================================================
-   The Final, Definitive Task Renderer Component
+   Stage 3 component - TASK RENDERERS
    ================================================================= */
 
-function TaskRenderer({ task }: { task: TaskPayload }) {
-  const { uiComponentId, context, flavorId, id: taskId } = task;
-  const flavorName = flavorId ? flavorId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : "Standard Task";
-  
+// --- Sub-Component for "Rank & Justify" Task ---
+function RankAndJustifyTask({ task, onSubmit, onEvaluate }: { task: TaskPayload; onSubmit: (payload: any) => Promise<void>; onEvaluate: () => Promise<any>; }) {
   const [response, setResponse] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [hasSubmitted, setHasSubmitted] = useState(false); // Simple boolean to track success
-  const [errorMessage, setErrorMessage] = useState("");   // State for errors
+  const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [evaluation, setEvaluation] = useState<{ score: number | null; feedback: string | null }>({ score: null, feedback: null });
-
-  const handleSubmit = async () => {
-      if (!response.trim()) { alert("Please provide a response before submitting."); return; }
-      setIsSubmitting(true);
-      setErrorMessage("");
-      try {
-          const res = await fetch(`${API_ROOT}/api/tasks/${taskId}/submit`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ response_payload: { ranking_and_rationale_txt: response } })
-          });
-          if (!res.ok) {
-              const errorData = await res.json().catch(() => ({ detail: "Submission failed!" }));
-              throw new Error(errorData.detail || "Submission failed!");
-          }
-          setHasSubmitted(true); // Set our simple success flag
-      } catch (e) {
-          setErrorMessage((e as Error).message);
-      } finally {
-          setIsSubmitting(false);
-      }
-  };
-
-  const handleEvaluate = async () => {
-    setIsEvaluating(true);
-    try {
-        const res = await fetch(`${API_ROOT}/api/responses/${taskId}/evaluate`, { method: 'POST' });
-        if (!res.ok) {
-            const errorData = await res.json().catch(() => ({ detail: "Evaluation request failed!" }));
-            throw new Error(errorData.detail || "Evaluation request failed!");
-        }
-        const data = await res.json();
-        setEvaluation({ score: data.score, feedback: data.feedback });
-    } catch (e) {
-        alert(`Could not get feedback: ${(e as Error).message}`);
-    } finally {
-        setIsEvaluating(false);
-    }
-  };
-
-  switch (uiComponentId) {
-    case 'ui-rank-and-write':
-      return (
-        <div className="p-4 border bg-blue-50 border-blue-200 rounded-lg animate-fade-in">
-          <h5 className="font-bold text-blue-800">Task: Rank & Justify <span className="text-xs font-normal bg-blue-100 text-blue-700 px-2 py-0.5 ml-2 rounded-full">{flavorName}</span></h5>
-          <p className="text-sm text-gray-700 mt-2 mb-3"><strong>Scenario:</strong> {context.criteria_md}</p>
-          <div className="p-3 bg-white border rounded-md"><h6 className="font-semibold mb-2">Options:</h6><ul className="list-decimal pl-5 space-y-1">{(context.options_list || []).map((opt: string, i: number) => <li key={i} className="text-gray-800">{opt}</li>)}</ul></div>
-          
-          <textarea 
-            className="w-full mt-3 p-2 border rounded" 
-            rows={4} 
-            placeholder="Your ranking and detailed rationale..." 
-            value={response} 
-            onChange={(e) => setResponse(e.target.value)} 
-            disabled={hasSubmitted || !!evaluation.feedback}
-          />
-          
-          <div className="mt-2 flex items-center justify-end gap-4">
-              {errorMessage && <span className="text-sm font-medium text-red-600">{errorMessage}</span>}
-              
-              {/* --- THIS IS THE CORRECT DISPLAY LOGIC --- */}
-              {!hasSubmitted ? (
-                // State 1: Show Submit button if not yet submitted
-                <button onClick={handleSubmit} disabled={isSubmitting} className="px-4 py-1.5 bg-blue-600 text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50">
-                  {isSubmitting ? "Submitting..." : "Submit Response"}
-                </button>
-              ) : !evaluation.feedback ? (
-                // State 2: Show "Get Feedback" button if submitted but not yet evaluated
-                <>
-                  <span className="text-sm font-medium text-green-700">Response Saved!</span>
-                  <button onClick={handleEvaluate} disabled={isEvaluating} className="px-4 py-1.5 bg-green-600 text-white text-sm font-semibold rounded-md hover:bg-green-700 disabled:opacity-50">
-                      {isEvaluating ? "Evaluating..." : "Get Feedback"}
-                  </button>
-                </>
-              ) : null /* State 3: Show nothing once feedback is displayed below */}
-          </div>
-
-          {/* This part shows the final feedback */}
-          {evaluation.feedback && (
-              <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg animate-fade-in">
-                  <h6 className="font-bold text-green-800">Feedback</h6>
-                  {evaluation.score !== null && <p className="text-sm font-semibold">Score: {Number(evaluation.score).toFixed(2)} / 5.00</p>}
-                  <p className="text-sm mt-1 text-gray-700 whitespace-pre-wrap">{evaluation.feedback}</p>
-              </div>
-          )}
-        </div>);
-    default:
-      return <div className="p-4 border bg-red-100 text-red-700 rounded-lg">Error: Unknown UI Component ID '{uiComponentId}'</div>;
-  }
+  const onLocalSubmit = async () => { if (!response.trim()) { alert("Please provide a response."); return; } setIsSubmitting(true); setErrorMessage(""); try { await onSubmit({ ranking_and_rationale_txt: response }); setHasSubmitted(true); } catch(e) { setErrorMessage((e as Error).message); } finally { setIsSubmitting(false); }};
+  const onLocalEvaluate = async () => { setIsEvaluating(true); try { const result = await onEvaluate(); setEvaluation(result); } catch (e) { alert(`Could not get feedback: ${(e as Error).message}`); } finally { setIsEvaluating(false); }};
+  const flavorName = task.flavorId ? task.flavorId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : "Standard Task";
+  return (<div className="p-4 border bg-blue-50 border-blue-200 rounded-lg"><h5 className="font-bold text-blue-800">Task: Rank & Justify <span className="text-xs font-normal bg-blue-100 text-blue-700 px-2 py-0.5 ml-2 rounded-full">{flavorName}</span></h5><p className="text-sm text-gray-700 mt-2 mb-3"><strong>Scenario:</strong> {task.context.criteria_md}</p><div className="p-3 bg-white border rounded-md"><h6 className="font-semibold mb-2">Options:</h6><ul className="list-decimal pl-5 space-y-1">{(task.context.options_list || []).map((opt: string, i: number) => <li key={i} className="text-gray-800">{opt}</li>)}</ul></div><textarea className="w-full mt-3 p-2 border rounded" rows={4} placeholder="Your ranking and detailed rationale..." value={response} onChange={(e) => setResponse(e.target.value)} disabled={hasSubmitted || !!evaluation.feedback} /><div className="mt-2 flex items-center justify-end gap-4">{errorMessage && <span className="text-sm font-medium text-red-600">{errorMessage}</span>}{!hasSubmitted ? (<button onClick={onLocalSubmit} disabled={isSubmitting} className="px-4 py-1.5 bg-blue-600 text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50">{isSubmitting ? "Submitting..." : "Submit Response"}</button>) : !evaluation.feedback ? (<><span className="text-sm font-medium text-green-700">Response Saved!</span><button onClick={onLocalEvaluate} disabled={isEvaluating} className="px-4 py-1.5 bg-green-600 text-white text-sm font-semibold rounded-md hover:bg-green-700 disabled:opacity-50">{isEvaluating ? "Evaluating..." : "Get Feedback"}</button></>) : null}</div>{evaluation.feedback && (<div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg"><h6 className="font-bold text-green-800">Feedback</h6>{evaluation.score !== null && <p className="text-sm font-semibold">Score: {Number(evaluation.score).toFixed(2)} / 5.00</p>}<p className="text-sm mt-1 text-gray-700 whitespace-pre-wrap">{evaluation.feedback}</p></div>)}</div>);
 }
-function TaskFactory({ profile, onBack }: { profile: Profile; onBack: () => void; }) {
-  const [tasks, setTasks] = useState<Record<string, TaskPayload[]>>({});
-  const [loadingState, setLoadingState] = useState<Record<string, boolean>>({});
-  const learningObjectives = Object.entries(profile.aleDesign.learningObjectives);
 
-  // --- START: Frontend Helper Constants ---
-  const GCR_FLAVORS: Record<string, {id:string, name:string}[]> = {
-    "gcr-ED": [
-        {id: "prioritization", name: "Prioritization"},
-        {id: "resource_allocation", name: "Resource Allocation"},
-        {id: "risk_mitigation", name: "Risk Mitigation"},
-        {id: "ethical_dilemma", name: "Ethical Dilemma"},
-    ]
-  };
+// --- Sub-Component for "Sequencing" Task ---
+function SequenceTask({ task, onSubmit, onEvaluate }: { task: TaskPayload; onSubmit: (payload: any) => Promise<void>; onEvaluate: () => Promise<any>; }) {
+    const [items, setItems] = useState(task.context.items_to_sequence || []);
+    const [rationale, setRationale] = useState("");
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [hasSubmitted, setHasSubmitted] = useState(false);
+    const [errorMessage, setErrorMessage] = useState("");
+    const [evaluation, setEvaluation] = useState<{ score: number | null; feedback: string | null }>({ score: null, feedback: null });
+    const [isEvaluating, setIsEvaluating] = useState(false);
+    const handleOnDragEnd = (result: DropResult) => { if (!result.destination) return; const reorderedItems = Array.from(items); const [reorderedItem] = reorderedItems.splice(result.source.index, 1); reorderedItems.splice(result.destination.index, 0, reorderedItem); setItems(reorderedItems); };
+    const onLocalSubmit = async () => { if (!rationale.trim()) { alert("Please provide a rationale."); return; } const responsePayload = { sequenced_ids: items.map((item: any) => item.id), rationale_md: rationale }; setIsSubmitting(true); setErrorMessage(""); try { await onSubmit(responsePayload); setHasSubmitted(true); } catch(e) { setErrorMessage((e as Error).message); } finally { setIsSubmitting(false); }};
+    const onLocalEvaluate = async () => { setIsEvaluating(true); try { const result = await onEvaluate(); setEvaluation(result); } catch (e) { alert(`Could not get feedback: ${(e as Error).message}`); } finally { setIsEvaluating(false); }};
+    const flavorName = task.flavorId ? task.flavorId.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : "Standard Task";
+    return (<div className="p-4 border bg-purple-50 border-purple-200 rounded-lg"><h5 className="font-bold text-purple-800">Task: Sequence Cards <span className="text-xs font-normal bg-purple-100 text-purple-700 px-2 py-0.5 ml-2 rounded-full">{flavorName}</span></h5><p className="text-sm text-gray-700 my-2"><strong>Scenario:</strong> {task.context.scenario_md}</p><DragDropContext onDragEnd={handleOnDragEnd}><Droppable droppableId={`droppable-${task.id}`}>{(provided) => (<div {...provided.droppableProps} ref={provided.innerRef} className="space-y-2 p-2 bg-gray-100 rounded-md">{items.map(({ id, text }: { id: string, text: string }, index: number) => (<Draggable key={id} draggableId={id} index={index}>{(provided) => (<div ref={provided.innerRef} {...provided.draggableProps} {...provided.dragHandleProps} className="p-3 bg-white rounded shadow-sm border flex items-center gap-3"><MoveVertical size={16} className="text-gray-400" /> {text}</div>)}</Draggable>))}{provided.placeholder}</div>)}</Droppable></DragDropContext><textarea className="w-full mt-3 p-2 border rounded" rows={3} placeholder="Your rationale for this sequence..." value={rationale} onChange={(e) => setRationale(e.target.value)} disabled={hasSubmitted || !!evaluation.feedback} /><div className="mt-2 flex items-center justify-end gap-4">{errorMessage && <span className="text-sm font-medium text-red-600">{errorMessage}</span>}{!hasSubmitted ? (<button onClick={onLocalSubmit} disabled={isSubmitting} className="px-4 py-1.5 bg-blue-600 text-white text-sm font-semibold rounded-md hover:bg-blue-700 disabled:opacity-50">{isSubmitting ? "Submitting..." : "Submit Sequence"}</button>) : !evaluation.feedback ? (<><span className="text-sm font-medium text-green-700">Sequence Saved!</span><button onClick={onLocalEvaluate} disabled={isEvaluating} className="px-4 py-1.5 bg-green-600 text-white text-sm font-semibold rounded-md hover:bg-green-700 disabled:opacity-50">{isEvaluating ? "Evaluating..." : "Get Feedback"}</button></>) : null}</div>{evaluation.feedback && (<div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg"><h6 className="font-bold text-green-800">Feedback</h6>{evaluation.score !== null && <p className="text-sm font-semibold">Score: {Number(evaluation.score).toFixed(2)} / 5.00</p>}<p className="text-sm mt-1 text-gray-700 whitespace-pre-wrap">{evaluation.feedback}</p></div>)}</div>);
+}
 
-  const COMPETENCY_TO_GCR_MAP: Record<string, string> = {
-      "skills-cognitive-decisionMaking": "gcr-ED",
-      "skills-cognitive-strategicPlanning": "gcr-SF",
-      "skills-cognitive-analytical": "gcr-IG",
-      "skills-cognitive-criticalEvaluation": "gcr-ED",
-      "skills-interpersonal-communication": "gcr-IG",
-      "skills-interpersonal-collaboration": "gcr-CP",
-      "skills-interpersonal-negotiation": "gcr-NA",
-      "skills-interpersonal-empathy": "gcr-NA",
-  };
-  // --- END: Frontend Helper Constants ---
-
-  const generateTask = async (competencyId: string, objectiveText: string, flavorId: string) => {
-    const loadingKey = competencyId + flavorId;
-    setLoadingState(p => ({...p, [loadingKey]: true}));
-    try {
-      const res = await fetch(`${API_ROOT}/api/profiles/${profile.id}/generate-task`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            competency_id: competencyId,
-            objective_text: objectiveText,
-            flavor_id: flavorId
-        }),
-      });
-      if (!res.ok) {
-        throw new Error(`Server returned status ${res.status}`);
-      }
-      const taskPayload: TaskPayload = await res.json();
-      setTasks(p => ({
-        ...p,
-        [competencyId]: [...(p[competencyId] || []), taskPayload]
-      }));
-    } catch (e) {
-      alert(`Failed to generate task. Please check the console for details. Error: ${(e as Error).message}`);
-      console.error("Task Generation Error:", e);
-    } finally {
-        setLoadingState(p => ({...p, [loadingKey]: false}));
-    }
-  };
-
-  return (
-    <>
-      <div className="px-6 py-5 border-b border-gray-200">
-        <h2 className="text-lg font-semibold text-gray-800">Stage 3: Task Generator</h2>
-        <p className="text-sm text-gray-600">Generate and configure interactive tasks based on your design.</p>
-      </div>
-
-      <div className="p-6 space-y-6 bg-gray-50">
-        <h3 className="text-xl font-semibold text-gray-800 border-b pb-2 mb-4">Generated Tasks</h3>
-        
-        {learningObjectives.length === 0 && <p className="text-center text-gray-500 py-4">No learning objectives defined in Stage 2.</p>}
-        
-        {learningObjectives.map(([competencyId, objectiveText]) => {
-            const gcrId = COMPETENCY_TO_GCR_MAP[competencyId.split('-').slice(0,3).join('-')];
-            const flavors = gcrId ? GCR_FLAVORS[gcrId] : [];
-            
-            return (
-              <div key={competencyId} className="p-4 bg-white border rounded-lg shadow-sm">
-                <h4 className="font-semibold text-gray-800 capitalize">Objective for: <span className="text-blue-700">{competencyId.split('-').pop()}</span></h4>
-                <p className="text-sm text-gray-600 italic my-2">"{objectiveText}"</p>
-                
-                <div className="space-y-4 mt-4">
-                    <details className="relative inline-block text-left group">
-                        <summary className="inline-flex items-center gap-2 justify-center w-full rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
-                            <Sparkles size={16}/> Generate New Task <ChevronsRight size={16} className="transform transition-transform group-open:rotate-90" />
-                        </summary>
-                        <div className="origin-top-left absolute left-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10 hidden group-open:block">
-                            <div className="py-1" role="menu" aria-orientation="vertical">
-                                {flavors && flavors.length > 0 ? (
-                                    flavors.map(flavor => (
-                                        <a key={flavor.id} onClick={(e) => { e.preventDefault(); generateTask(competencyId, objectiveText, flavor.id); }} href="#" className="text-gray-700 block px-4 py-2 text-sm hover:bg-gray-100" role="menuitem">{flavor.name}</a>
-                                    ))
-                                ) : (
-                                    <a onClick={(e) => { e.preventDefault(); generateTask(competencyId, objectiveText, 'default'); }} href="#" className="text-gray-700 block px-4 py-2 text-sm hover:bg-gray-100" role="menuitem">Generate Standard Task</a>
-                                )}
-                            </div>
-                        </div>
-                    </details>
-                    
-                    <div className="space-y-3 pt-3">
-                        {(tasks[competencyId] || []).map((task) => (
-                            <TaskRenderer key={task.id} task={task} />
-                        ))}
-                    </div>
-                </div>
-              </div>
-            );
-        })}
-      </div>
-
-      <div className="px-6 py-4 border-t border-gray-200 flex justify-between bg-white items-center">
-        <button onClick={onBack} className="flex items-center gap-2 px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100">
-            <ArrowLeft size={18}/> Back to Stage 2
-        </button>
-      </div>
-    </>
-  );
+// --- The Master TaskRenderer that acts as a dispatcher ---
+function TaskRenderer({ task }: { task: TaskPayload }) {
+  const handleGenericSubmit = async (responsePayload: any) => { const res = await fetch(`${API_ROOT}/api/tasks/${task.id}/submit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ response_payload: responsePayload }) }); if (!res.ok) { const err = await res.json().catch(()=>({detail:"Submission failed"})); throw new Error(err.detail); } return await res.json(); };
+  const handleGenericEvaluate = async () => { const res = await fetch(`${API_ROOT}/api/responses/${task.id}/evaluate`, { method: 'POST' }); if (!res.ok) { const err = await res.json().catch(()=>({detail:"Evaluation failed"})); throw new Error(err.detail); } return await res.json(); };
+  switch (task.uiComponentId) {
+    case 'ui-rank-and-write':
+      return <RankAndJustifyTask task={task} onSubmit={handleGenericSubmit} onEvaluate={handleGenericEvaluate} />;
+    case 'ui-sequence-cards':
+      return <SequenceTask task={task} onSubmit={handleGenericSubmit} onEvaluate={handleGenericEvaluate} />;
+    default:
+      return <div className="p-4 border bg-red-100 text-red-700 rounded-lg">Error: Unknown UI Component ID '{task.uiComponentId}'</div>;
+  }
 }
 
 /* =================================================================
-   PrismApp ▸ stage switcher
+   Stage 3 component - TASK FACTORY
    ================================================================= */
-function PrismApp({ profile:initial, onExit }:{ profile:Profile; onExit:()=>void; }){
-  const [stage,setStage] = useState<"profiling"|"designing"|"tasking">("profiling");
-  const [profile,setProfile] = useState<Profile>(initial);
-  const [saveInfo,setSaveInfo] = useState({ loading:false, message:"", isError:false });
-  const updateProfile = (fn:(p:Profile)=>Profile)=>{ setProfile(fn); if(saveInfo.message) setSaveInfo({ loading:false, message:"", isError:false }); };
-  const saveProfile = async ()=>{
-    setSaveInfo({ loading:true, message:"", isError:false });
-    try {
-      const res = await fetch(`${API_ROOT}/api/profiles`,{ method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ ...profile, id:profile.id??null }) });
-      if(!res.ok) throw new Error("Save request failed with status "+res.status);
-      const data = await res.json();
-      updateProfile(p=>({ ...p, id:data.id }));
-      setSaveInfo({ loading:false, message:data.message||"Saved successfully!", isError:false });
-      setTimeout(() => setSaveInfo(s => s.message.includes("success") ? { ...s, message: "" } : s), 3000);
-    }catch(e){
-      setSaveInfo({ loading:false, message:(e as Error).message, isError:true });
-    }
-  };
-  const handleProceedToStage3 = async () => { await saveProfile(); if (!saveInfo.isError) { setStage("tasking"); }};
-  const stageComponents = {
-    profiling: <RoleProfiler profile={profile} onProfileChange={updateProfile} onComplete={()=>setStage("designing")} onSave={saveProfile} saveStatus={saveInfo}/>,
-    designing: <ALEDesigner profile={profile} onProfileChange={updateProfile} onBack={()=>setStage("profiling")} onFinish={handleProceedToStage3} onSave={saveProfile} saveStatus={saveInfo}/>,
-    tasking: <TaskFactory profile={profile} onBack={()=>setStage("designing")} />,
-  };
-  return (
-    <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
-      <button onClick={onExit} className="mb-4 flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900"><ArrowLeft size={16}/> Back to Dashboard</button>
-      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-        <header className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-          <div className="flex justify-between items-center">
-            <div><h1 className="text-2xl font-bold text-gray-900">PRISM Framework</h1><p className="text-gray-600">Professional Role Identity & SKIVE-Mapped Environments</p></div>
-            <div className="flex gap-2">
-              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='profiling' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 1</span>
-              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='designing' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 2</span>
-              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='tasking' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 3</span>
-            </div>
-          </div>
-        </header>
-        {stageComponents[stage as keyof typeof stageComponents]}
-      </div>
-    </div>);
-}
+function TaskFactory({ profile, onBack }: { profile: Profile; onBack: () => void; }) { const [tasks, setTasks] = useState<Record<string, TaskPayload[]>>({}); const [loadingState, setLoadingState] = useState<Record<string, boolean>>({}); const learningObjectives = Object.entries(profile.aleDesign.learningObjectives); const GCR_FLAVORS: Record<string, {id:string, name:string}[]> = { "gcr-ED": [ {id: "prioritization", name: "Prioritization"}, {id: "resource_allocation", name: "Resource Allocation"}, {id: "risk_mitigation", name: "Risk Mitigation"}, {id: "ethical_dilemma", name: "Ethical Dilemma"},], "gcr-SQ": [{id: "process_workflow", name: "Process Workflow"},{id: "project_timeline", name: "Project Timeline"}] }; const COMPETENCY_TO_GCR_MAP: Record<string, string> = { "skills-cognitive-decisionMaking": "gcr-ED", "skills-cognitive-strategicPlanning": "gcr-SQ", "skills-cognitive-analytical": "gcr-IG", "skills-cognitive-criticalEvaluation": "gcr-ED", "skills-interpersonal-communication": "gcr-IG", "skills-interpersonal-collaboration": "gcr-CP", "skills-interpersonal-negotiation": "gcr-NA", "skills-interpersonal-empathy": "gcr-NA", }; const generateTask = async (competencyId: string, objectiveText: string, flavorId: string) => { const loadingKey = competencyId + flavorId; setLoadingState(p => ({...p, [loadingKey]: true})); try { const res = await fetch(`${API_ROOT}/api/profiles/${profile.id}/generate-task`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ competency_id: competencyId, objective_text: objectiveText, flavor_id: flavorId }), }); if (!res.ok) { throw new Error(`Server returned status ${res.status}`); } const taskPayload: TaskPayload = await res.json(); setTasks(p => ({ ...p, [competencyId]: [...(p[competencyId] || []), taskPayload] })); } catch (e) { alert(`Failed to generate task. Error: ${(e as Error).message}`); console.error("Task Generation Error:", e); } finally { setLoadingState(p => ({...p, [loadingKey]: false})); } }; return (<><div className="px-6 py-5 border-b"><h2 className="text-lg font-semibold">Stage 3: Task Generator</h2><p className="text-sm text-gray-600">Generate tasks based on your design.</p></div><div className="p-6 space-y-6 bg-gray-50"><h3 className="text-xl font-semibold border-b pb-2 mb-4">Generated Tasks</h3>{learningObjectives.length === 0 && <p className="text-center text-gray-500 py-4">No learning objectives defined in Stage 2.</p>}{learningObjectives.map(([competencyId, objectiveText]) => { const gcrId = COMPETENCY_TO_GCR_MAP[competencyId.split('-').slice(0,3).join('-')]; const flavors = gcrId ? GCR_FLAVORS[gcrId] : []; return (<div key={competencyId} className="p-4 bg-white border rounded-lg shadow-sm"><h4 className="font-semibold capitalize">Objective for: <span className="text-blue-700">{competencyId.split('-').pop()}</span></h4><p className="text-sm text-gray-600 italic my-2">"{objectiveText}"</p><div className="space-y-4 mt-4"><details className="relative inline-block text-left group"><summary className="inline-flex items-center gap-2 justify-center w-full rounded-md border shadow-sm px-4 py-2 bg-white text-sm font-medium hover:bg-gray-50 cursor-pointer"><Sparkles size={16}/> Generate New Task <ChevronsRight size={16} className="transform transition-transform group-open:rotate-90" /></summary><div className="origin-top-left absolute left-0 mt-2 w-56 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-10 hidden group-open:block"><div className="py-1">{flavors && flavors.length > 0 ? (flavors.map(flavor => (<a key={flavor.id} onClick={(e) => { e.preventDefault(); (e.currentTarget.parentElement?.parentElement?.parentElement as HTMLDetailsElement).open = false; generateTask(competencyId, objectiveText, flavor.id); }} href="#" className="text-gray-700 block px-4 py-2 text-sm hover:bg-gray-100">{flavor.name}</a>))) : (<a onClick={(e) => { e.preventDefault(); (e.currentTarget.parentElement?.parentElement?.parentElement as HTMLDetailsElement).open = false; generateTask(competencyId, objectiveText, 'default'); }} href="#" className="text-gray-700 block px-4 py-2 text-sm hover:bg-gray-100">Generate Standard Task</a>)}</div></div></details><div className="space-y-3 pt-3">{(tasks[competencyId] || []).map((task) => (<TaskRenderer key={task.id} task={task} />))}</div></div></div>); })}</div><div className="px-6 py-4 border-t flex justify-between items-center"><button onClick={onBack} className="flex items-center gap-2 px-6 py-2 border rounded-lg hover:bg-gray-100"><ArrowLeft size={18}/> Back to Stage 2</button></div></>); }
+
+/* =================================================================
+   PrismApp - stage switcher
+   ================================================================= */
+function PrismApp({ profile:initial, onExit }:{ profile:Profile; onExit:()=>void; }){ const [stage,setStage] = useState<"profiling"|"designing"|"tasking">("profiling"); const [profile,setProfile] = useState<Profile>(initial); const [saveInfo,setSaveInfo] = useState({ loading:false, message:"", isError:false }); const updateProfile = (fn:(p:Profile)=>Profile)=>{ setProfile(fn); if(saveInfo.message) setSaveInfo({ loading:false, message:"", isError:false }); }; const saveProfile = async ()=>{ setSaveInfo({ loading:true, message:"", isError:false }); try { const res = await fetch(`${API_ROOT}/api/profiles`,{ method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ ...profile, id:profile.id??null }) }); if(!res.ok) throw new Error("Save request failed with status "+res.status); const data = await res.json(); updateProfile(p=>({ ...p, id:data.id })); setSaveInfo({ loading:false, message:data.message||"Saved successfully!", isError:false }); setTimeout(() => setSaveInfo(s => s.message.includes("success") ? { ...s, message: "" } : s), 3000); }catch(e){ setSaveInfo({ loading:false, message:(e as Error).message, isError:true }); } }; const handleProceedToStage3 = async () => { await saveProfile(); if (!saveInfo.isError) { setStage("tasking"); }}; const stageComponents = { profiling: <RoleProfiler profile={profile} onProfileChange={updateProfile} onComplete={()=>setStage("designing")} onSave={saveProfile} saveStatus={saveInfo}/>, designing: <ALEDesigner profile={profile} onProfileChange={updateProfile} onBack={()=>setStage("profiling")} onFinish={handleProceedToStage3} onSave={saveProfile} saveStatus={saveInfo}/>, tasking: <TaskFactory profile={profile} onBack={()=>setStage("designing")} />, }; return (<div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8"><button onClick={onExit} className="mb-4 flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900"><ArrowLeft size={16}/> Back to Dashboard</button><div className="bg-white rounded-lg shadow-lg overflow-hidden"><header className="px-6 py-4 border-b border-gray-200 bg-gray-50"><div className="flex justify-between items-center"><div><h1 className="text-2xl font-bold text-gray-900">PRISM Framework</h1><p className="text-gray-600">Professional Role Identity & SKIVE-Mapped Environments</p></div><div className="flex gap-2"><span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='profiling' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 1</span><span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='designing' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 2</span><span className={`px-3 py-1 rounded-full text-sm font-semibold ${stage==='tasking' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}>Stage 3</span></div></div></header>{stageComponents[stage as keyof typeof stageComponents]}</div></div>); }
 
 /* =================================================================
    ProfileLoader  +  AppContainer
    ================================================================= */
-function ProfileLoader({ onSelectProfile }:{ onSelectProfile:(p:Profile)=>void; }){
-  const [list,setList] = useState<SavedSummary[]>([]);
-  const [state,setState] = useState<{loading:boolean; err:string|null}>({ loading:true, err:null });
-  const loadAll = async ()=>{
-    setState({ loading:true, err:null });
-    try{
-      const res = await fetch(`${API_ROOT}/api/profiles`);
-      if(!res.ok) throw new Error(`Server connection failed: ${res.status}`);
-      const data = await res.json();
-      setList(data);
-    }catch(e){
-      setState({ loading:false, err:(e as Error).message });
-    }finally{
-      setState(s=>({ ...s, loading:false }));
-    }
-  };
-  useEffect(()=>{ loadAll(); },[]);
-  const loadOne = async (id:number)=>{
-    setState({ loading:true, err:null });
-    try{
-      const res = await fetch(`${API_ROOT}/api/profiles/${id}`);
-      if(!res.ok) throw new Error(`Failed to load profile: ${res.status}`);
-      const loadedData = await res.json();
-      const completeProfile = { ...getInitialProfile(), ...loadedData, id: loadedData.id, };
-      onSelectProfile(completeProfile);
-    }catch(e){
-      setState({ loading:false, err:(e as Error).message });
-    }
-  };
-  return (
-    <div className="max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
-      <div className="bg-white rounded-lg shadow-lg">
-        <header className="p-6 border-b"><h1 className="text-2xl font-bold text-gray-900">PRISM Profile Dashboard</h1><p className="text-gray-600">Select a profile to edit or create a new one.</p></header>
-        <main className="p-6">
-          <button onClick={()=>onSelectProfile(getInitialProfile())} className="w-full flex items-center justify-center gap-2 mb-6 px-4 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700"><PlusCircle size={20}/> Create New Profile</button>
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">Existing Profiles</h2>
-          {state.loading && <p className="text-center py-4">Loading profiles…</p>}
-          {state.err && (<div className="py-8 px-4 text-center bg-red-50 border-red-200 rounded-lg"><ServerCrash className="mx-auto text-red-500 mb-2" size={32}/><p className="font-semibold text-red-700">Connection Error</p><p className="text-sm text-red-600 mb-4">{state.err}</p><button onClick={loadAll} className="flex items-center mx-auto gap-2 px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200"><RefreshCw size={14}/> Retry</button></div>)}
-          {(!state.loading && !state.err) && (list.length===0 ? <p className="text-center text-gray-500 py-4">No saved profiles found.</p> : <ul className="space-y-3">{list.map(p=>(<li key={p.id} onClick={()=>loadOne(p.id)} className="grid grid-cols-3 items-center p-4 bg-gray-50 border rounded-lg hover:bg-blue-50 hover:border-blue-300 cursor-pointer">
-              <div className="col-span-2"><p className="font-semibold text-blue-800">{p.specific_role||"Untitled Role"}</p><p className="text-sm text-gray-600">{p.profession}{p.department ? ` / ${p.department}` : ''}</p>{p.archetype &&<span className="inline-block mt-1 text-xs font-medium bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{p.archetype}</span>}</div>
-              <div className="text-right text-sm"><p className="text-gray-500">Last updated</p><p className="font-medium text-gray-700">{new Date(p.updated_at).toLocaleDateString()}</p></div>
-            </li>))}</ul>
-          )}
-        </main>
-      </div>
-    </div>);
-}
+function ProfileLoader({ onSelectProfile }:{ onSelectProfile:(p:Profile)=>void; }){ const [list,setList] = useState<SavedSummary[]>([]); const [state,setState] = useState<{loading:boolean; err:string|null}>({ loading:true, err:null }); const loadAll = async ()=>{ setState({ loading:true, err:null }); try{ const res = await fetch(`${API_ROOT}/api/profiles`); if(!res.ok) throw new Error(`Server connection failed: ${res.status}`); const data = await res.json(); setList(data); }catch(e){ setState({ loading:false, err:(e as Error).message }); }finally{ setState(s=>({ ...s, loading:false })); } }; useEffect(()=>{ loadAll(); },[]); const loadOne = async (id:number)=>{ setState({ loading:true, err:null }); try{ const res = await fetch(`${API_ROOT}/api/profiles/${id}`); if(!res.ok) throw new Error(`Failed to load profile: ${res.status}`); const loadedData = await res.json(); const completeProfile = { ...getInitialProfile(), ...loadedData, id: loadedData.id, }; onSelectProfile(completeProfile); }catch(e){ setState({ loading:false, err:(e as Error).message }); } }; return (<div className="max-w-4xl mx-auto p-4 sm:p-6 lg:p-8"><div className="bg-white rounded-lg shadow-lg"><header className="p-6 border-b"><h1 className="text-2xl font-bold text-gray-900">PRISM Profile Dashboard</h1><p className="text-gray-600">Select a profile to edit or create a new one.</p></header><main className="p-6"><button onClick={()=>onSelectProfile(getInitialProfile())} className="w-full flex items-center justify-center gap-2 mb-6 px-4 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700"><PlusCircle size={20}/> Create New Profile</button><h2 className="text-lg font-semibold text-gray-800 mb-4">Existing Profiles</h2>{state.loading && <p className="text-center py-4">Loading profiles…</p>}{state.err && (<div className="py-8 px-4 text-center bg-red-50 border-red-200 rounded-lg"><ServerCrash className="mx-auto text-red-500 mb-2" size={32}/><p className="font-semibold text-red-700">Connection Error</p><p className="text-sm text-red-600 mb-4">{state.err}</p><button onClick={loadAll} className="flex items-center mx-auto gap-2 px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200"><RefreshCw size={14}/> Retry</button></div>)}{(!state.loading && !state.err) && (list.length===0 ? <p className="text-center text-gray-500 py-4">No saved profiles found.</p> : <ul className="space-y-3">{list.map(p=>(<li key={p.id} onClick={()=>loadOne(p.id)} className="grid grid-cols-3 items-center p-4 bg-gray-50 border rounded-lg hover:bg-blue-50 hover:border-blue-300 cursor-pointer"><div className="col-span-2"><p className="font-semibold text-blue-800">{p.specific_role||"Untitled Role"}</p><p className="text-sm text-gray-600">{p.profession}{p.department ? ` / ${p.department}` : ''}</p>{p.archetype &&<span className="inline-block mt-1 text-xs font-medium bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">{p.archetype}</span>}</div><div className="text-right text-sm"><p className="text-gray-500">Last updated</p><p className="font-medium text-gray-700">{new Date(p.updated_at).toLocaleDateString()}</p></div></li>))}</ul>)}</main></div></div>); }
 
-function AppContainer(){
-  const [active,setActive] = useState<Profile|null>(null);
-  return active ? <PrismApp profile={active} onExit={()=>setActive(null)}/> : <ProfileLoader onSelectProfile={setActive}/>;
-}
+function AppContainer(){ const [active,setActive] = useState<Profile|null>(null); return active ? <PrismApp profile={active} onExit={()=>setActive(null)}/> : <ProfileLoader onSelectProfile={setActive}/>; }
 
 /* =================================================================
    Mount React
    ================================================================= */
-ReactDOM.createRoot(document.getElementById("root")!).render(<React.StrictMode><AppContainer/></React.StrictMode>);
+ReactDOM
+  .createRoot(document.getElementById("root")!)
+  .render(
+    <React.StrictMode>
+      <AppContainer/>
+    </React.StrictMode>
+  );

@@ -229,70 +229,70 @@ def rebuild_ale(obj_rows, ale_rows, skive_rows):
             d["selectedSkiveApproaches"].setdefault(r["aspect"], []).append(r["approach"])
     return d
 
-# --------------------------------------------------------------------
-# NEW: 7.5 - Stage 3 Helper Dictionaries
-# --------------------------------------------------------------------
-
-# The bridge between Stage 2 objectives and Stage 3 GCRs
+# ====================================================================
+# STAGE 3 HELPER DICTIONARIES
+# ====================================================================
+# 1. The bridge between Stage 2 objectives and Stage 3 GCRs
 COMPETENCY_TO_GCR_MAP = {
-    "skills-cognitive-analytical": "gcr-IG",
     "skills-cognitive-decisionMaking": "gcr-ED",
-    "skills-cognitive-strategicPlanning": "gcr-SF",
-    "skills-cognitive-criticalEvaluation": "gcr-ED",
-    "skills-interpersonal-communication": "gcr-IG",
-    "skills-interpersonal-collaboration": "gcr-CP",
-    "skills-interpersonal-negotiation": "gcr-NA",
-    "skills-interpersonal-empathy": "gcr-NA",
-}
+    "skills-cognitive-strategicPlanning": "gcr-SQ", # <-- ADD THIS LINE
 
-# This map links the GCR ID to the UI component that should render it
+    "knowledge-conditional-whenToApply": "gcr-ED",
+    "knowledge-procedural-techniques": "gcr-ED",
+    "skills-cognitive-criticalEvaluation": "gcr-ED",
+    "skills-interpersonal-communication": "gcr-ED",
+    "skills-interpersonal-collaboration": "gcr-ED",
+
+    #"skills-cognitive-analytical": "gcr-IG",
+    #"skills-cognitive-criticalEvaluation": "gcr-ED",
+    #"skills-interpersonal-communication": "gcr-IG",
+    #"skills-interpersonal-collaboration": "gcr-CP",
+    #"skills-interpersonal-negotiation": "gcr-NA",
+    #"skills-interpersonal-empathy": "gcr-NA",
+}
+# 2. This map links the GCR ID to the UI component that should render it
 GCR_UI_COMPONENT_MAP = {
     "gcr-IG": "ui-markdown-editor",
     "gcr-ED": "ui-rank-and-write",
     "gcr-SF": "ui-kanban-board",
     "gcr-CP": "ui-team-chat-planner",
     "gcr-NA": "ui-negotiation-dialogue",
+    "gcr-SQ": "ui-sequence-cards", # <-- ADD THIS LINE
 }
-
-# In a real app, this would be loaded from a JSON file library
+# 3. The library of detailed GCR blueprints
 GCR_DEFINITIONS = {
     "gcr-ED": {
-        "id": "gcr-ED",
-        "name": "Evaluative Decision",
-        "verbs": ["gather", "analyze", "prioritize", "communicate"],
+        "id": "gcr-ED", "name": "Evaluative Decision", "verbs": ["gather", "analyze", "prioritize", "communicate"],
+        "input_schema": { "type": "object", "properties": { "options_list": {"type": "array", "description": "A list of 3-5 plausible options.", "items": {"type": "string"}}, "criteria_md": {"type": "string", "description": "Markdown string describing decision criteria."}}},
+    },
+    # --- ADD THIS ENTIRE NEW GCR DEFINITION ---
+    "gcr-SQ": {
+        "id": "gcr-SQ",
+        "name": "Procedural Sequencing",
+        "verbs": ["gather", "analyze", "sequence", "communicate"],
         "input_schema": {
-            "type": "object",
-            "properties": {
-                "options_list": {
-                    "type": "array",
-                    "description": "A list of 3-5 plausible options the user must choose from.",
-                    "items": {"type": "string"}
-                },
-                "criteria_md": {
-                    "type": "string",
-                    "description": "A markdown string describing the criteria for making the decision."
-                }
-            },
-        }
+            "type": "object", "properties": {
+                "scenario_md": {"type": "string", "description": "Markdown context for the sequencing task."},
+                "items_to_sequence": { "type": "array", "description": "An array of objects, each with an 'id' and 'text', representing the draggable cards.", "items": { "type": "object", "properties": {"id": {"type": "string"}, "text": {"type": "string"}}}}
+            }
+        },
+        "output_schema": { "type": "object", "properties": { "sequenced_ids": {"type": "array", "items": {"type": "string"}}, "rationale_md": {"type": "string"} } }
     }
-    # ... other GCR definitions would be loaded here
-
 }
 # 4. The library of different scenario "flavors" for each GCR
 GCR_FLAVORS = {
     "gcr-ED": [
-        {"id": "prioritization", "name": "Prioritization Challenge"},
-        {"id": "resource_allocation", "name": "Resource Allocation Dilemma"},
-        {"id": "risk_mitigation", "name": "Risk Mitigation Choice"},
+        {"id": "prioritization", "name": "Prioritization"},
+        {"id": "resource_allocation", "name": "Resource Allocation"},
+        {"id": "risk_mitigation", "name": "Risk Mitigation"},
         {"id": "ethical_dilemma", "name": "Ethical Dilemma"},
     ],
-    "gcr-SF": [
-        {"id": "new_market_entry", "name": "New Market Entry Plan"},
-        {"id": "product_roadmap", "name": "Product Roadmap Creation"},
+    # --- ADD THIS ENTIRE NEW FLAVOR DEFINITION ---
+    "gcr-SQ": [
+        {"id": "process_workflow", "name": "Process Workflow"},
+        {"id": "project_timeline", "name": "Project Timeline"},
     ]
-    # ... add flavors for other GCRs as needed
 }
-
 # --------------------------------------------------------------------
 # 8.  Gemini endpoint
 # --------------------------------------------------------------------
@@ -458,6 +458,8 @@ async def save_profile(profile: Profile, db=Depends(get_db_connection)):
     finally:
         cur.close()
 
+# main.py
+
 # ====================================================================
 # The Complete, Corrected Stage 3 Task Generation Endpoint
 # ====================================================================
@@ -481,44 +483,27 @@ async def generate_task_for_competency(pid: int, req: TaskGenerationRequest, db=
             elif flavor["id"] == "risk_mitigation": flavor_prompt_injection = "The core of this scenario MUST be a choice between a high-reward, high-risk path and a lower-reward, low-risk path."
             elif flavor["id"] == "ethical_dilemma": flavor_prompt_injection = "The core of this scenario MUST be an ethical dilemma where there is no clear right answer, forcing a trade-off between competing values."
 
-    # --- THIS IS THE FIX ---
-    # Define the role_data variable from the loaded profile BEFORE using it.
     role_data = profile_data.roleData
-    
-    # Now, construct the prompt using the defined variable.
     prompt = f"""You are a simulation engine for professional training. Generate a realistic scenario for a serious game.
-
     ROLE: {role_data.specificRole} ({role_data.profession} / {role_data.department})
     ROLE DESCRIPTION: {role_data.description}
     KEY RESPONSIBILITIES: {role_data.key_responsibilities or "[]"}
     TYPICAL TASKS: {role_data.day_to_day_tasks or "[]"}
-    
     The learning objective is: "{req.objective_text}"
-
     The cognitive task is an '{gcr_definition["name"]}'.
-
     *** IMPORTANT INSTRUCTION: {flavor_prompt_injection if flavor_prompt_injection else "Generate a standard scenario for this cognitive task."} ***
-
     Based on all this context, populate the following JSON object according to the schema. Make the content specific and plausible for the role.
     SCHEMA: {gcr_definition["input_schema"]}
-
     Respond with ONLY the populated JSON object, with no extra text or markdown formatting."""
 
     # --- Step 3: Call AI and Parse Response ---
-    if not API_KEY: raise HTTPException(500, "Gemini disabled on server.")
+    if not API_KEY: raise HTTPException(500, "Gemini is not configured.")
     ai_generated_context = {}
     try:
         model = genai.GenerativeModel("gemini-1.5-flash-latest")
         raw_response = model.generate_content(prompt).text
-        
-        # --- NEW, MORE ROBUST PARSING LOGIC ---
-        # 1. Clean the string of markdown and whitespace
-        # The .strip() is the key part that will fix your current error.
-        clean_response = raw_response.strip().replace("```json", "").replace("```", "").strip()
-
-        # 2. Let json.loads be the validator. If it fails, the string is not valid JSON.
-        ai_generated_context = json.loads(clean_response)
-
+        sanitized_response = raw_response.strip().replace("```json", "").replace("```", "").replace("\\$", "$").strip()
+        ai_generated_context = json.loads(sanitized_response)
     except json.JSONDecodeError as e:
         logging.error(f"AI returned a string that could not be parsed as JSON. Error: {e}")
         logging.error(f"--- Raw AI Response was: ---\n{raw_response}\n-----------------------------")
@@ -527,11 +512,11 @@ async def generate_task_for_competency(pid: int, req: TaskGenerationRequest, db=
         logging.error(f"An unexpected error occurred during AI Task Generation: {e}")
         raise HTTPException(500, "An unexpected error occurred while generating the task.")
 
-
     # --- Step 4: Save the Generated Task to the Database ---
     new_task_id = None
     cur = db.cursor()
     try:
+        print(f"DEBUG: Attempting to insert with gcr_id = '{gcr_id}'")
         cur.execute(
             """INSERT INTO generated_tasks 
                (profile_id, objective_competency_id, gcr_id, flavor_id, context_json) 
